@@ -1,0 +1,141 @@
+---
+title: "Desktop workspace: the Electron shell for holaOS"
+description: "Understand the Electron app architecture, renderer layout, main process structure, and the workspace surfaces exposed to operators and agents."
+---
+
+The desktop workspace is the Electron application that wraps and surfaces the holaOS runtime. It is the operator-facing shell: it manages authentication, workspace sessions, app lifecycle, file navigation, outputs, notifications, and settings — all sitting on top of the runtime API server running inside the staged bundle.
+
+## Architecture overview
+
+The desktop is organized into three layers:
+
+<CardGroup cols={3}>
+  <Card title="Renderer (React + Vite)" icon="browser">
+    The frontend UI built with React 19 and bundled by Vite. Communicates with the main process through the preload bridge via `window.electronAPI`.
+  </Card>
+  <Card title="Main process (Electron)" icon="cpu">
+    The Node.js Electron main process handles IPC, authentication, runtime lifecycle, file system access, and native module integration.
+  </Card>
+  <Card title="Runtime bundle" icon="package">
+    The staged holaOS runtime under `desktop/out/runtime-<platform>/`. Started by the main process at launch and accessed via HTTP on port 3060.
+  </Card>
+</CardGroup>
+
+## Renderer component structure
+
+The renderer is organized under `desktop/src/components/`:
+
+```
+desktop/src/components/
+├── auth/              # authentication flows and session state
+├── billing/           # billing and subscription UI
+├── layout/            # top-level shell and chrome components
+│   ├── AppShell.tsx             # root shell with tabs and pane management
+│   ├── TopTabsBar.tsx           # workspace-level navigation tabs
+│   ├── OperationsDrawer.tsx     # collapsible operations inbox/drawer
+│   ├── SettingsDialog.tsx       # settings modal container
+│   ├── WorkspaceAppsDialog.tsx  # workspace app browser and installer
+│   └── NotificationToastStack.tsx  # live notification toasts
+├── marketplace/       # app marketplace browser
+├── onboarding/        # first-workspace and onboarding flows
+├── panes/             # the main workspace surface panes
+├── publish/           # workspace template publishing
+├── settings/          # settings panel components
+└── ui/                # shared design system primitives
+```
+
+### Workspace surface panes
+
+The `panes/` directory contains the named surfaces that fill the main workspace area:
+
+| Pane | File | What it shows |
+|---|---|---|
+| Chat | `ChatPane.tsx` | The primary agent session — message history, composer, and run streaming |
+| File Explorer | `FileExplorerPane.tsx` | Workspace file system browser with attachment drag |
+| App Surface | `AppSurfacePane.tsx` | Embedded webview for a running workspace app |
+| Space Applications Explorer | `SpaceApplicationsExplorerPane.tsx` | Lists installed workspace apps |
+| Space Browser Display | `SpaceBrowserDisplayPane.tsx` | Desktop browser capability display |
+| Browser | `BrowserPane.tsx` | Built-in browser pane |
+| Automations | `AutomationsPane.tsx` | Scheduled jobs (cronjobs) management |
+| Marketplace | `MarketplacePane.tsx` | App template marketplace |
+| Onboarding | `OnboardingPane.tsx` | Workspace onboarding flow |
+| Integrations | `IntegrationsPane.tsx` | Third-party integration connections |
+
+## Development mode
+
+When the desktop runs in development mode (`npm run desktop:dev`), the `HOLABOSS_DESKTOP_USER_DATA_DIR` environment variable is set to `holaboss-local-dev`:
+
+```bash
+cross-env HOLABOSS_DESKTOP_USER_DATA_DIR=holaboss-local-dev concurrently ...
+```
+
+This isolates development state (SQLite databases, runtime config, workspace data) from any production installation. Remove or change this value to point at a different user data directory.
+
+Additional development flags:
+
+| Variable | Effect |
+|---|---|
+| `HOLABOSS_INTERNAL_DEV=1` | Enables internal developer features and diagnostics |
+| `HOLABOSS_VERBOSE_TELEMETRY=1` | Enables verbose telemetry logging to the console |
+| `VITE_DEV_SERVER_URL=http://localhost:5173` | Set automatically by the dev runner — tells Electron to load from Vite instead of the built bundle |
+
+## Runtime bundle staging
+
+The main process manages the runtime bundle lifecycle. The staged bundle lives under:
+
+```
+desktop/out/runtime-<platform>/
+```
+
+Where `<platform>` is `macos`, `linux`, or `windows` depending on the host. The `predev` hook ensures a staged bundle exists before Electron starts. Two staging paths are available:
+
+```bash
+# Build from local source (for runtime development)
+npm run desktop:prepare-runtime:local
+
+# Download the latest published release bundle
+npm run desktop:prepare-runtime
+```
+
+During development, the runtime bundle watcher (`dev:runtime:watch`) monitors local runtime sources and restages automatically when files change.
+
+## The predev validation hook
+
+The `predev` script in `desktop/package.json` runs before every `npm run desktop:dev`:
+
+```json
+"predev": "node scripts/ensure-app-sdk.mjs && node scripts/validate-dev-env.mjs && kill-port 5173 && npm run rebuild:native && node scripts/ensure-runtime-bundle.mjs && node scripts/patch-electron-plist.mjs"
+```
+
+Each script in the chain has a specific responsibility:
+
+- **`ensure-app-sdk.mjs`** — builds `sdk/app-sdk` if the built artifacts are missing
+- **`validate-dev-env.mjs`** — checks that `desktop/.env` exists and required variables are set
+- **`kill-port 5173`** — frees the Vite dev server port if a previous session left it occupied
+- **`rebuild:native`** — rebuilds `better-sqlite3` for the current Electron version using `@electron/rebuild`
+- **`ensure-runtime-bundle.mjs`** — stages the runtime bundle if it is missing or stale
+- **`patch-electron-plist.mjs`** — patches the macOS `.app` bundle metadata for local development
+
+## Native module rebuild
+
+The desktop depends on `better-sqlite3`, a native Node.js addon. It must be compiled for the specific Electron version in use. The rebuild script handles this:
+
+```bash
+npm run rebuild:native
+# equivalent to:
+node ./node_modules/@electron/rebuild/lib/cli.js -f -w better-sqlite3
+```
+
+If Electron fails to open with a native module error, re-running this command manually is the first fix to attempt.
+
+## Themes
+
+The desktop ships eight built-in themes selectable at runtime. Theme preference is stored under the `holaboss-theme-v1` key in localStorage:
+
+```
+amber-minimal-dark / amber-minimal-light
+cosmic-night-dark  / cosmic-night-light
+sepia-dark         / sepia-light
+clean-slate-dark   / clean-slate-light
+bold-tech-dark     / bold-tech-light
+```

@@ -1,0 +1,132 @@
+---
+title: "Workspace apps: building on top of holaOS"
+description: "Workspace apps are installable applications with lifecycle management, assigned ports, and agent-accessible MCP APIs that extend what holaOS agents can do."
+---
+
+Workspace apps are the primary extension point in holaOS. Each app is a self-contained process that runs alongside the agent runtime, exposes an HTTP API and an MCP endpoint, and registers its capabilities in `workspace.yaml` so agents can discover and call it automatically.
+
+## What a workspace app is
+
+A workspace app is a directory under `apps/{appId}/` inside the workspace folder. It contains:
+
+- **`app.runtime.yaml`** — the app's runtime manifest declaring its MCP tools, lifecycle commands, health check settings, and environment contract
+- **Application code** — any Node.js, Python, or Docker Compose–based service that listens on the assigned `PORT` and `MCP_PORT`
+
+The runtime assigns two ports to every app, calculated from its position in `workspace.yaml`:
+
+```typescript
+// runtime/api-server/src/workspace-apps.ts
+const APP_HTTP_PORT_BASE = 18080;
+const APP_MCP_PORT_BASE = 13100;
+
+export function portsForAppIndex(index: number): { http: number; mcp: number } {
+  return {
+    http: APP_HTTP_PORT_BASE + index,
+    mcp: APP_MCP_PORT_BASE + index
+  };
+}
+```
+
+The `http` port is the app's general-purpose HTTP surface (used for health checks and browser-accessible UIs). The `mcp` port is where the app serves its MCP endpoint that agents call through.
+
+## Registering apps in workspace.yaml
+
+Apps are declared in the `applications` array of `workspace.yaml`:
+
+```yaml
+applications:
+  - app_id: my-app
+    config_path: apps/my-app/app.runtime.yaml
+    lifecycle:
+      setup: npm install && npm run build
+      start: node dist/server.js
+      stop: ""
+```
+
+| Field | Description |
+|---|---|
+| `app_id` | Unique identifier. Used to address the app in agent tool calls. |
+| `config_path` | Path to `app.runtime.yaml` relative to the workspace root. |
+| `lifecycle.setup` | One-time build or dependency installation command. Runs before `start`. |
+| `lifecycle.start` | Command that starts the long-running server process. |
+| `lifecycle.stop` | Optional command to gracefully stop the server. |
+
+## App install flow
+
+When a user installs an app from the marketplace, the desktop downloads a `.tar.gz` archive to a temp directory, then calls the runtime install endpoint:
+
+```
+POST /api/v1/apps/install-archive
+{
+  "workspace_id": "<id>",
+  "app_id": "my-app",
+  "archive_url": "https://github.com/holaboss-ai/holaboss-apps/releases/download/v1.0.0/my-app.tar.gz"
+}
+```
+
+For local archives, use `archive_path` instead (an absolute filesystem path on the server). Provide exactly one of `archive_path` or `archive_url` — not both.
+
+The runtime:
+
+1. Downloads the archive (or reads from a local path)
+2. Extracts it to `apps/{appId}/` inside the workspace directory
+3. Validates that `app.runtime.yaml` is present in the archive root
+4. Appends the app entry to `workspace.yaml`
+5. Runs the `lifecycle.setup` command
+6. Starts the app via the normal `ensureAppRunning` lifecycle
+
+<Note>
+  Re-installing an app that already has files in `apps/{appId}/` returns a `409 Conflict`. You must uninstall first.
+</Note>
+
+## Lifecycle states
+
+The `AppLifecycleExecutor` (defined in `app-lifecycle-worker.ts`) manages app processes. An app can be in one of these effective states:
+
+| State | Meaning |
+|---|---|
+| **building** | The `lifecycle.setup` command is running |
+| **running** | The app process is up and passing health checks on both `http` and `mcp` ports |
+| **failed** | Setup or start failed; see `apps/{appId}/.holaboss/logs/setup.latest.log` |
+| **stopped** | The app was explicitly stopped or never started |
+
+The lifecycle supports three backend strategies, selected automatically from the app's manifest:
+
+- **Shell lifecycle** — `lifecycle.start` / `lifecycle.stop` commands spawn a child process
+- **Start command** — a `start` field in `app.runtime.yaml` used as a subprocess command
+- **Docker Compose** — a `docker-compose.yml` in the app directory; no explicit lifecycle commands needed
+
+## How agents interact with apps
+
+When an app is running and has declared MCP tools in `app.runtime.yaml`, the runtime writes an MCP registry entry to `workspace.yaml`:
+
+```yaml
+mcp_registry:
+  servers:
+    my-app:
+      type: remote
+      url: http://localhost:13100/mcp/sse
+      enabled: true
+      timeout_ms: 30000
+      started_at: "2026-01-01T00:00:00.000Z"
+  allowlist:
+    tool_ids:
+      - my-app.search
+      - my-app.create_record
+```
+
+The agent harness reads `mcp_tool_refs` from `HarnessHostPiRequest` and routes tool calls through the MCP sidecar to the app's MCP port. Apps never need to register themselves — the runtime keeps the registry in sync on start and stop.
+
+## Learn more
+
+<CardGroup cols={3}>
+  <Card title="Build your first app" icon="rocket" href="/apps/first-app">
+    Step-by-step guide to scaffolding and deploying a workspace app.
+  </Card>
+  <Card title="Workspace skills" icon="book-open" href="/apps/workspace-skills">
+    Extend agent behavior with skill markdown files loaded into the system prompt.
+  </Card>
+  <Card title="MCP integration" icon="plug" href="/apps/mcp-integration">
+    How apps expose tools to agents via the Model Context Protocol.
+  </Card>
+</CardGroup>

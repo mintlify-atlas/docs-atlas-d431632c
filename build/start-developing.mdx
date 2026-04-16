@@ -1,0 +1,141 @@
+---
+title: "Set up the local holaOS development environment"
+description: "Install dependencies, stage the local runtime bundle, and launch the Electron desktop app for the full holaOS development loop in five steps."
+---
+
+This guide walks through the complete local development setup for holaOS — from dependency installation to launching the Electron desktop with a staged runtime bundle. Follow the steps in order on a machine running macOS, Linux, or WSL with Node.js 24 and npm available.
+
+## Prerequisites
+
+Before starting, verify the required tools are present:
+
+```bash
+git --version
+node --version   # must be 24.x or newer
+npm --version
+```
+
+If `node --version` reports a major version lower than 22, upgrade Node.js before continuing. The repository targets Node.js `24.14.1`.
+
+<Note>
+  The one-line installer at the top of the README automates every step below. Use the manual path when you need to inspect or control individual setup steps.
+</Note>
+
+## Manual install steps
+
+<Steps>
+  <Step title="Install desktop dependencies">
+    Run the root-level wrapper script to install all Electron desktop dependencies under `desktop/`:
+
+    ```bash
+    npm run desktop:install
+    ```
+
+    This runs `npm install --prefix desktop`, keeping the install scoped to the desktop workspace.
+  </Step>
+
+  <Step title="Create the local environment file">
+    Copy the example environment file to create your local `.env`:
+
+    ```bash
+    cp desktop/.env.example desktop/.env
+    ```
+
+    The example already includes working defaults for the public OSS configuration. Edit values only when your provider or machine requires different endpoints. The defaults set:
+
+    ```bash
+    HOLABOSS_AUTH_BASE_URL=https://api.holaboss.ai
+    HOLABOSS_AUTH_SIGN_IN_URL=https://www.holaboss.ai/signin
+    HOLABOSS_BACKEND_BASE_URL=http://35.160.37.189
+    # SENTRY_DSN=   (optional — leave empty to disable error tracking)
+    ```
+  </Step>
+
+  <Step title="Stage the local runtime bundle">
+    Build the runtime from your local source checkout and stage it into `desktop/out/runtime-<platform>`:
+
+    ```bash
+    npm run desktop:prepare-runtime:local
+    ```
+
+    This is the right path when you are actively changing runtime code. To stage the latest published release bundle instead (for testing the desktop against a known artifact), use:
+
+    ```bash
+    npm run desktop:prepare-runtime
+    ```
+  </Step>
+
+  <Step title="Run the type checker (optional but recommended)">
+    Validate the TypeScript types before launching Electron:
+
+    ```bash
+    npm run desktop:typecheck
+    ```
+
+    If this fails, fix the reported errors before continuing. The `pretypecheck` hook ensures the app SDK is built before TypeScript sees it.
+  </Step>
+
+  <Step title="Start the desktop app in development mode">
+    Launch the full development environment:
+
+    ```bash
+    npm run desktop:dev
+    ```
+
+    This starts four concurrent processes managed by `concurrently`:
+
+    - **Vite renderer dev server** — serves the React frontend at `http://localhost:5173`
+    - **tsup electron watcher** — rebuilds main/preload on every change
+    - **Runtime bundle watcher** — watches local runtime sources and restages when files change
+    - **Electron runner** — waits for the Vite server and main bundle, then opens the Electron window
+
+    The `HOLABOSS_DESKTOP_USER_DATA_DIR` environment variable is set to `holaboss-local-dev` so development data is isolated from any installed production app.
+  </Step>
+</Steps>
+
+## The predev hook
+
+Every `npm run desktop:dev` invocation runs the `predev` script first. That hook does five things in order:
+
+```bash
+node scripts/ensure-app-sdk.mjs         # builds the app SDK if not present
+node scripts/validate-dev-env.mjs       # checks required env vars exist
+kill-port 5173                          # frees the Vite port if it was in use
+npm run rebuild:native                  # rebuilds better-sqlite3 for the active Electron version
+node scripts/ensure-runtime-bundle.mjs  # stages the runtime if the bundle is missing or stale
+node scripts/patch-electron-plist.mjs   # patches macOS app bundle metadata
+```
+
+If the runtime bundle under `desktop/out/runtime-<platform>` is missing or stale relative to local runtime sources, `ensure-runtime-bundle.mjs` automatically re-runs `prepare:runtime:local`. You do not need to manually re-run `desktop:prepare-runtime:local` before each dev session.
+
+## Runtime staging paths
+
+| Command | What it does |
+|---|---|
+| `npm run desktop:prepare-runtime:local` | Builds from local `runtime/` source — use when changing runtime code |
+| `npm run desktop:prepare-runtime` | Downloads the latest published release bundle from GitHub Releases |
+
+Use the local path for active development. Use the published bundle to reproduce a specific release or verify the desktop against a known artifact.
+
+## Optional runtime validation
+
+To run the full runtime test suite on a fresh clone before launching the desktop:
+
+```bash
+npm run runtime:state-store:install
+npm run runtime:state-store:build
+npm run runtime:harness-host:install
+npm run runtime:harness-host:build
+npm run runtime:api-server:install
+npm run runtime:test
+```
+
+`npm run runtime:test` runs the state-store, harness-host, and api-server test suites in sequence.
+
+## Validation checklist
+
+Before opening a pull request, confirm:
+
+- `npm run desktop:typecheck` exits cleanly
+- `npm run desktop:dev` opens the Electron window without errors in the console
+- `npm run runtime:test` passes if runtime packages were changed

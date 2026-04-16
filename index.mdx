@@ -1,97 +1,68 @@
 ---
-title: "Introduction"
-description: "Welcome to the new home for your documentation"
+title: "HolaBoss documentation"
+description: "holaOS is the open-source agent environment for long-horizon work — runtime, durable memory, workspace apps, and continuity across sessions."
 ---
 
-## Setting up
+holaOS is an open-source agent environment built for long-horizon work. Instead of resetting to one-off task execution after every run, holaOS gives agents a structured operating system — runtime, memory, workspace apps, and durable state — so they stay inspectable, continuable, and self-evolving across sessions.
 
-Get your documentation site up and running in minutes.
-
-<Card
-  title="Start here"
-  icon="rocket"
-  href="/quickstart"
-  horizontal
->
-  Follow our three step quickstart guide.
-</Card>
-
-## Make it yours
-
-Design a docs site that looks great and empowers your users.
-
-<Columns cols={2}>
-  <Card
-    title="Edit locally"
-    icon="pen-to-square"
-    href="/development"
-  >
-    Edit your docs locally and preview them in real time.
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Install holaOS and launch your first local desktop environment in minutes.
   </Card>
-  <Card
-    title="Customize your site"
-    icon="palette"
-    href="/essentials/settings"
-  >
-    Customize the design and colors of your site to match your brand.
+  <Card title="Core Concepts" icon="book-open" href="/concepts/environment-engineering">
+    Understand the environment engineering thesis behind holaOS.
   </Card>
-    <Card
-    title="Set up navigation"
-    icon="map"
-    href="/essentials/navigation"
-  >
-    Organize your docs to help users find what they need and succeed with your product.
+  <Card title="Build on holaOS" icon="code" href="/build/start-developing">
+    Set up the local desktop and runtime development loop.
   </Card>
-  <Card
-    title="API documentation"
-    icon="terminal"
-    href="/api-reference/introduction"
-  >
-    Auto-generate API documentation from OpenAPI specifications.
+  <Card title="App Development" icon="puzzle-piece" href="/apps/overview">
+    Build workspace apps that extend the agent environment.
   </Card>
-</Columns>
+</CardGroup>
 
-## Create beautiful pages
+## What is holaOS?
 
-Everything you need to create world-class documentation.
+holaOS is the runtime layer that turns a capable LLM into an agent that can work over long horizons. It provides:
 
-<Columns cols={2}>
-  <Card
-    title="Write with MDX"
-    icon="pen-fancy"
-    href="/essentials/markdown"
-  >
-    Use MDX to style your docs pages.
-  </Card>
-  <Card
-    title="Code samples"
-    icon="code"
-    href="/essentials/code"
-  >
-    Add sample code to demonstrate how to use your product.
-  </Card>
-  <Card
-    title="Images"
-    icon="image"
-    href="/essentials/images"
-  >
-    Display images and other media.
-  </Card>
-  <Card
-    title="Reusable snippets"
-    icon="recycle"
-    href="/essentials/reusable-snippets"
-  >
-    Write once and reuse across your docs.
-  </Card>
-</Columns>
+- **Durable memory** — agents capture and recall facts across sessions using an embedding-backed memory store
+- **Workspace model** — a structured filesystem contract where agents read inputs and write outputs
+- **Agent harness** — a stable execution boundary that sandboxes agent runs and streams events back to the desktop
+- **MCP integration** — native Model Context Protocol support so agents can call tools exposed by any MCP server
+- **Workspace apps** — installable applications with their own lifecycle, ports, and agent-accessible APIs
+- **Proactive tasks** — cronjob-driven autonomous runs that let agents act on schedules, not just user input
+- **Self-evolving skills** — agents can propose and persist new skill files that improve future behavior
 
-## Need inspiration?
+<CardGroup cols={2}>
+  <Card title="Learning path" icon="graduation-cap" href="/learning-path">
+    A guided technical path through the docs after setup.
+  </Card>
+  <Card title="Workspace model" icon="folder-tree" href="/concepts/workspace-model">
+    The workspace contract, authored surfaces, and runtime-owned state.
+  </Card>
+  <Card title="Memory and continuity" icon="brain" href="/concepts/memory-and-continuity">
+    How durable memory and continuity artifacts enable long-horizon work.
+  </Card>
+  <Card title="Runtime APIs" icon="server" href="/build/runtime-apis">
+    The runtime operational surface for workspaces, runs, and streaming.
+  </Card>
+</CardGroup>
 
-<Card
-  title="See complete examples"
-  icon="stars"
-  href="https://mintlify.com/customers"
->
-  Browse our showcase of exceptional documentation sites.
-</Card>
+## Get started
+
+<Steps>
+  <Step title="Install prerequisites">
+    You need `curl`, `bash`, and a macOS, Linux, or WSL machine. Node.js 24 and npm are bootstrapped automatically.
+  </Step>
+  <Step title="Run the one-line installer">
+    ```bash
+    curl -fsSL https://raw.githubusercontent.com/holaboss-ai/holaboss-ai/main/scripts/install.sh | bash -s -- --launch
+    ```
+    This clones the repo, installs dependencies, and launches the Electron desktop app.
+  </Step>
+  <Step title="Open the desktop workspace">
+    Once Electron opens, create a workspace and send your first message to the agent.
+  </Step>
+  <Step title="Explore and build">
+    Read the [learning path](/learning-path) to understand the architecture, then [build your first workspace app](/apps/first-app).
+  </Step>
+</Steps>

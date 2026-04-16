@@ -1,0 +1,654 @@
+---
+title: "Runtime API: workspaces, sessions, streaming, and apps"
+description: "Full route reference for the holaOS Fastify API server — workspaces, sessions, SSE streaming, memory, apps, and config endpoints with key parameters."
+---
+
+The holaOS runtime API is a Fastify HTTP server that exposes all workspace, session, memory, app, and configuration operations. By default it listens on `0.0.0.0:3060`. The port and host are controlled by environment variables read in `runtime/api-server/src/index.ts`.
+
+## Server configuration
+
+| Variable | Default | Description |
+|---|---|---|
+| `SANDBOX_RUNTIME_API_PORT` | `3060` | Listening port |
+| `SANDBOX_AGENT_BIND_PORT` | `3060` | Legacy alias for the port |
+| `PORT` | `3060` | Generic port fallback |
+| `SANDBOX_RUNTIME_API_HOST` | `0.0.0.0` | Listening host |
+| `SANDBOX_AGENT_BIND_HOST` | `0.0.0.0` | Legacy alias for the host |
+
+## Health
+
+```
+GET /healthz
+```
+
+Returns `{ "ok": true }` when the server is up. No authentication required.
+
+---
+
+## Runtime config and status routes
+
+### GET /api/v1/runtime/config
+
+Returns the current resolved runtime configuration. Sensitive fields like `auth_token` are not included in the response — only `auth_token_present: boolean`.
+
+**Response fields:** `config_path`, `loaded_from_file`, `auth_token_present`, `user_id`, `sandbox_id`, `model_proxy_base_url`, `default_model`, `runtime_mode`, `default_provider`, `holaboss_enabled`, `desktop_browser_enabled`, `desktop_browser_url`
+
+### PUT /api/v1/runtime/config
+
+Updates `runtime-config.json` with the provided payload fields.
+
+**Body fields (all optional):** `auth_token`, `user_id`, `sandbox_id`, `model_proxy_base_url`, `default_model`, `runtime_mode`, `default_provider`, `holaboss_enabled`, `desktop_browser_enabled`, `desktop_browser_url`, `desktop_browser_auth_token`
+
+Pass `null` or an empty string for a field to remove it from the config file.
+
+### GET /api/v1/runtime/status
+
+Returns the current runtime harness status, backend config presence, and browser capability state.
+
+**Response fields:** `harness`, `config_loaded`, `config_path`, `backend_config_present`, `harness_ready`, `harness_state`, `browser_available`, `browser_state`, `browser_url`
+
+### GET /api/v1/runtime/system-status
+
+Returns basic system status information.
+
+### GET /api/v1/runtime/profile
+
+Returns the default user profile.
+
+### PUT /api/v1/runtime/profile
+
+Updates the default user profile.
+
+**Body fields:** `name`
+
+### POST /api/v1/runtime/profile/auth-fallback
+
+Triggers an authentication fallback flow for the runtime profile.
+
+---
+
+## Workspace routes
+
+### POST /api/v1/workspaces
+
+Creates a new workspace.
+
+**Body fields:** `name` (required), `harness` (optional)
+
+**Response:** workspace record
+
+### GET /api/v1/workspaces
+
+Lists all active workspaces.
+
+**Query params:** `include_deleted` (boolean, default false)
+
+**Response:** `{ workspaces: WorkspaceRecord[] }`
+
+### GET /api/v1/workspaces/:workspaceId
+
+Returns a single workspace by ID.
+
+**Response:** workspace record with fields: `id`, `name`, `status`, `harness`, `error_message`, `onboarding_status`, `onboarding_session_id`, `onboarding_completed_at`, `created_at`, `updated_at`, `deleted_at_utc`
+
+### PATCH /api/v1/workspaces/:workspaceId
+
+Updates workspace fields.
+
+**Body fields (all optional):** `name`, `onboarding_status`, `onboarding_session_id`, `onboarding_completed_at`, `onboarding_completion_summary`, `onboarding_requested_at`, `onboarding_requested_by`
+
+### DELETE /api/v1/workspaces/:workspaceId
+
+Soft-deletes a workspace. Sets `deleted_at_utc` and stops associated apps.
+
+### POST /api/v1/workspaces/:workspaceId/apply-template
+
+Extracts a template archive (`.tar.gz` or `.zip`) into the workspace directory.
+
+**Body:** multipart form with `file` field, or `{ archive_path }` JSON pointing to a workspace-relative path.
+
+### POST /api/v1/workspaces/:workspaceId/apply-template-from-url
+
+Downloads and extracts a template archive from a URL into the workspace directory.
+
+**Body fields:** `url` (required)
+
+### GET /api/v1/workspaces/:workspaceId/files/*
+
+Serves a file from the workspace directory at the given path. Prevents path traversal.
+
+### PUT /api/v1/workspaces/:workspaceId/files/*
+
+Writes a file to the workspace directory at the given path.
+
+### GET /api/v1/workspaces/:workspaceId/snapshot
+
+Returns a JSON snapshot of the current workspace state.
+
+### GET /api/v1/workspaces/:workspaceId/export
+
+Streams a `.tar.gz` archive of the workspace directory.
+
+---
+
+## Session (agent-sessions) routes
+
+### POST /api/v1/agent-sessions
+
+Creates a new agent session record.
+
+**Body fields:** `workspace_id` (required), `kind` (optional), `title` (optional), `parent_session_id` (optional)
+
+**Response:** session record with fields: `workspace_id`, `session_id`, `kind`, `title`, `parent_session_id`, `created_by`, `created_at`, `updated_at`, `archived_at`
+
+### POST /api/v1/agent-sessions/queue
+
+Queues a user input to a session, creating the session if needed.
+
+**Body fields:** `workspace_id` (required), `text` (required), `session_id` (optional), `selected_model` (optional), `attachments` (optional array of attachment objects)
+
+Each attachment object: `{ id, kind, name, mime_type, size_bytes, workspace_path }`
+
+**Response:** `{ input_id, session_id, workspace_id, queued: true }`
+
+### POST /api/v1/agent-sessions/:sessionId/pause
+
+Requests a pause/stop of the running session.
+
+### GET /api/v1/agent-sessions
+
+Lists agent sessions, optionally filtered by workspace.
+
+**Query params:** `workspace_id` (optional), `include_archived` (boolean), `limit`, `offset`
+
+### GET /api/v1/agent-sessions/:sessionId/state
+
+Returns the current runtime state of a session.
+
+**Response fields:** `workspace_id`, `session_id`, `status`, `current_input_id`, `current_worker_id`, `lease_until`, `heartbeat_at`, `last_error`, plus `effective_state` (one of `IDLE`, `QUEUED`, `BUSY`, `WAITING_USER`, `ERROR`)
+
+### GET /api/v1/agent-sessions/by-workspace/:workspaceId/runtime-states
+
+Lists all active runtime states for a workspace.
+
+### GET /api/v1/agent-sessions/:sessionId/history
+
+Returns the message history for a session.
+
+**Query params:** `limit` (default 100), `offset` (default 0), `before_input_id` (optional cursor)
+
+**Response:** `{ messages: SessionMessageRecord[] }`
+
+### GET /api/v1/agent-sessions/:sessionId/turn-results
+
+Returns turn result records for a session.
+
+**Query params:** `limit`, `offset`
+
+**Response:** `{ turn_results: TurnResultRecord[] }`
+
+### GET /api/v1/agent-sessions/:sessionId/request-snapshots
+
+Returns turn request snapshots for a session.
+
+### GET /api/v1/agent-sessions/:sessionId/compaction-boundaries
+
+Returns compaction boundary records for a session.
+
+### GET /api/v1/agent-sessions/:sessionId/resume-context
+
+Returns the resume context for continuing a session after interruption or compaction.
+
+### POST /api/v1/agent-sessions/:sessionId/artifacts
+
+Creates an artifact record attached to a session.
+
+### GET /api/v1/agent-sessions/:sessionId/artifacts
+
+Lists artifact records for a session.
+
+### GET /api/v1/agent-sessions/by-workspace/:workspaceId/with-artifacts
+
+Lists sessions that have at least one artifact, for a given workspace.
+
+### GET /api/v1/agent-sessions/:sessionId/outputs/events
+
+Returns the stored output event log for a session and input.
+
+**Query params:** `workspace_id` (required), `input_id` (optional), `after_sequence` (optional), `limit`
+
+### GET /api/v1/agent-sessions/:sessionId/outputs/stream (SSE)
+
+Streams output events for a session as Server-Sent Events. This is the primary streaming endpoint for live run progress.
+
+**Query params:** `workspace_id` (required), `input_id` (optional), `after_sequence` (optional)
+
+**SSE event format:**
+
+```
+event: <event_type>
+id: <input_id>:<sequence>
+data: {"id":"...","workspace_id":"...","session_id":"...","input_id":"...","sequence":42,"event_type":"pi_native_event","created_at":"...","timestamp":"...","payload":{...}}
+```
+
+Terminal event types that close the stream: `run_completed`, `run_failed`.
+
+The server sends periodic keepalive comments (`: keepalive`) to hold the connection open while waiting for events.
+
+---
+
+## Agent runs routes
+
+### POST /api/v1/agent-runs
+
+Enqueues an agent run (non-streaming).
+
+**Body fields:** `workspace_id` (required), `session_id` (optional), `text` (required), `selected_model` (optional), `attachments` (optional)
+
+**Response:** `{ input_id, session_id, workspace_id }`
+
+### POST /api/v1/agent-runs/stream
+
+Enqueues an agent run and streams output events as SSE until terminal.
+
+**Body fields:** same as `/api/v1/agent-runs`
+
+**Response:** SSE stream using the same event format as `outputs/stream`.
+
+---
+
+## Memory routes
+
+### POST /api/v1/memory/search
+
+Searches memory entries by semantic query.
+
+**Body fields:** `query` (required), `limit` (optional), `scope` (optional), `workspace_id` (optional)
+
+### POST /api/v1/memory/get
+
+Retrieves specific memory entries by key.
+
+**Body fields:** `keys` (array of strings), `workspace_id` (optional)
+
+### POST /api/v1/memory/upsert
+
+Creates or updates a memory entry.
+
+**Body fields:** `key` (required), `content` (required), `scope` (optional), `workspace_id` (optional)
+
+### POST /api/v1/memory/status
+
+Returns current memory index status.
+
+### POST /api/v1/memory/sync
+
+Triggers a memory sync/refresh cycle.
+
+---
+
+## Memory update proposal routes
+
+### GET /api/v1/memory-update-proposals
+
+Lists pending memory update proposals.
+
+**Query params:** `workspace_id` (optional), `limit`, `offset`
+
+### POST /api/v1/memory-update-proposals/:proposalId/accept
+
+Accepts a memory update proposal, persisting it as a durable memory entry.
+
+### POST /api/v1/memory-update-proposals/:proposalId/dismiss
+
+Dismisses a memory update proposal without persisting it.
+
+---
+
+## App routes
+
+### GET /api/v1/apps
+
+Lists workspace apps.
+
+**Query params:** `workspace_id` (optional)
+
+**Response:** `{ apps: ParsedInstalledApp[] }`
+
+### GET /api/v1/apps/ports
+
+Returns current port assignments for all workspace apps.
+
+### POST /api/v1/apps/:appId/start
+
+Starts a workspace app. Performs full setup if the app has not completed setup.
+
+**Body fields:** `workspace_id` (required)
+
+### POST /api/v1/apps/:appId/stop
+
+Stops a running workspace app.
+
+**Body fields:** `workspace_id` (required)
+
+### POST /api/v1/apps/:appId/setup
+
+Runs app setup (install, build, configure) for the given app.
+
+**Body fields:** `workspace_id` (required), `env` (optional key-value object)
+
+### DELETE /api/v1/apps/:appId
+
+Removes an installed app from the workspace.
+
+**Body fields:** `workspace_id` (required)
+
+### GET /api/v1/apps/:appId/setup-log
+
+Returns the setup log output for an app.
+
+**Query params:** `workspace_id` (required)
+
+### GET /api/v1/apps/:appId/build-status
+
+Returns the build status record for an app.
+
+### GET /api/v1/apps/catalog
+
+Returns the local app catalog.
+
+### POST /api/v1/apps/catalog/sync
+
+Syncs the app catalog from the remote marketplace.
+
+### POST /api/v1/apps/install-archive
+
+Installs an app from a local archive file (`.tar.gz` or `.zip`). Extracts under `apps/{appId}/`, registers in `workspace.yaml`, and starts the app.
+
+**Body fields:** `workspace_id` (required), `app_id` (required), `archive_path` (absolute filesystem path to a local archive), `archive_url` (HTTPS URL to download the archive from) — provide exactly one of `archive_path` or `archive_url`
+
+### POST /api/v1/apps/install
+
+Installs an app from the catalog by app ID.
+
+**Body fields:** `workspace_id` (required), `app_id` (required)
+
+### POST /api/v1/apps/ensure-running
+
+Ensures a specific app is running, starting it if needed.
+
+**Body fields:** `workspace_id` (required), `app_id` (required)
+
+---
+
+## Output routes
+
+### GET /api/v1/outputs
+
+Lists output records.
+
+**Query params:** `workspace_id` (optional), `session_id` (optional), `folder_id` (optional), `limit`, `offset`
+
+### GET /api/v1/outputs/counts
+
+Returns output counts grouped by folder.
+
+### GET /api/v1/outputs/:outputId
+
+Returns a single output record.
+
+### POST /api/v1/outputs
+
+Creates a new output record.
+
+### PATCH /api/v1/outputs/:outputId
+
+Updates an output record (title, folder, status, metadata).
+
+### DELETE /api/v1/outputs/:outputId
+
+Deletes an output record.
+
+### GET /api/v1/output-folders
+
+Lists output folders.
+
+### POST /api/v1/output-folders
+
+Creates an output folder.
+
+### GET /api/v1/output-folders/:folderId
+
+Returns a single output folder.
+
+### PATCH /api/v1/output-folders/:folderId
+
+Updates an output folder (name, position).
+
+### DELETE /api/v1/output-folders/:folderId
+
+Deletes an output folder.
+
+---
+
+## Notification routes
+
+### GET /api/v1/notifications
+
+Lists runtime notifications.
+
+**Query params:** `workspace_id` (optional), `state` (optional), `limit`, `offset`
+
+### PATCH /api/v1/notifications/:notificationId
+
+Updates a notification (mark read, dismiss).
+
+**Body fields:** `state` (optional), `read_at` (optional), `dismissed_at` (optional)
+
+---
+
+## Cronjob routes
+
+### GET /api/v1/cronjobs
+
+Lists cronjobs.
+
+**Query params:** `workspace_id` (optional), `limit`, `offset`
+
+### POST /api/v1/cronjobs
+
+Creates a new cronjob.
+
+**Body fields:** `workspace_id` (required), `name` (required), `cron` (required), `instruction` (required), `description` (optional), `enabled` (boolean), `delivery` (optional), `metadata` (optional)
+
+### GET /api/v1/cronjobs/:jobId
+
+Returns a single cronjob.
+
+### POST /api/v1/cronjobs/:jobId/run
+
+Triggers an immediate run of a cronjob.
+
+**Body fields:** `workspace_id` (required)
+
+### PATCH /api/v1/cronjobs/:jobId
+
+Updates a cronjob (name, cron, instruction, enabled, delivery, metadata).
+
+### DELETE /api/v1/cronjobs/:jobId
+
+Deletes a cronjob.
+
+---
+
+## Task proposal routes
+
+### GET /api/v1/task-proposals
+
+Lists task proposals.
+
+**Query params:** `workspace_id` (optional), `state` (optional), `limit`, `offset`
+
+### GET /api/v1/task-proposals/unreviewed
+
+Lists unreviewed task proposals.
+
+### GET /api/v1/task-proposals/unreviewed/stream (SSE)
+
+Streams new unreviewed task proposals as Server-Sent Events.
+
+### POST /api/v1/task-proposals
+
+Creates a task proposal.
+
+### POST /api/v1/task-proposals/:proposalId/accept
+
+Accepts a task proposal, creating a queued session input from it.
+
+### GET /api/v1/task-proposals/:proposalId
+
+Returns a single task proposal.
+
+### PATCH /api/v1/task-proposals/:proposalId
+
+Updates a task proposal state.
+
+---
+
+## Capabilities routes
+
+### GET /api/v1/capabilities/browser
+
+Returns the current browser capability configuration and availability.
+
+### POST /api/v1/capabilities/browser/tools/:toolId
+
+Invokes a desktop browser tool by ID.
+
+### GET /api/v1/capabilities/runtime-tools
+
+Returns available runtime tools.
+
+### GET /api/v1/capabilities/runtime-tools/onboarding/status
+
+Returns the onboarding completion status for runtime tools.
+
+### POST /api/v1/capabilities/runtime-tools/onboarding/complete
+
+Marks runtime tool onboarding as complete.
+
+### GET /api/v1/capabilities/runtime-tools/cronjobs
+
+Lists cronjobs via the runtime tools capability path.
+
+### POST /api/v1/capabilities/runtime-tools/cronjobs
+
+Creates a cronjob via the runtime tools capability path.
+
+### GET /api/v1/capabilities/runtime-tools/cronjobs/:jobId
+
+Returns a cronjob via the runtime tools capability path.
+
+### PATCH /api/v1/capabilities/runtime-tools/cronjobs/:jobId
+
+Updates a cronjob via the runtime tools capability path.
+
+### DELETE /api/v1/capabilities/runtime-tools/cronjobs/:jobId
+
+Deletes a cronjob via the runtime tools capability path.
+
+### POST /api/v1/capabilities/runtime-tools/images/generate
+
+Generates an image via the runtime tools capability.
+
+### POST /api/v1/capabilities/runtime-tools/reports
+
+Creates a report via the runtime tools capability.
+
+---
+
+## Integration routes
+
+### GET /api/v1/integrations/catalog
+
+Returns the integration catalog.
+
+### GET /api/v1/integrations/connections
+
+Lists integration connections.
+
+### POST /api/v1/integrations/connections
+
+Creates an integration connection.
+
+### PATCH /api/v1/integrations/connections/:connectionId
+
+Updates an integration connection.
+
+### DELETE /api/v1/integrations/connections/:connectionId
+
+Deletes an integration connection.
+
+### GET /api/v1/integrations/bindings
+
+Lists integration bindings.
+
+### PUT /api/v1/integrations/bindings/:workspaceId/:targetType/:targetId/:integrationKey
+
+Creates or updates an integration binding.
+
+### DELETE /api/v1/integrations/bindings/:bindingId
+
+Deletes an integration binding.
+
+### GET /api/v1/integrations/readiness
+
+Returns the readiness state of configured integrations.
+
+### POST /api/v1/integrations/broker/token
+
+Issues a broker token for integration access.
+
+### POST /api/v1/integrations/broker/proxy
+
+Proxies a request through the integration broker.
+
+### GET /api/v1/integrations/oauth/configs
+
+Lists OAuth provider configurations.
+
+### PUT /api/v1/integrations/oauth/configs/:providerId
+
+Creates or updates an OAuth provider configuration.
+
+### DELETE /api/v1/integrations/oauth/configs/:providerId
+
+Deletes an OAuth provider configuration.
+
+### POST /api/v1/integrations/oauth/authorize
+
+Initiates an OAuth authorization flow.
+
+### POST /api/v1/integrations/composio/finalize
+
+Finalizes a Composio integration connection.
+
+---
+
+## Lifecycle and internal routes
+
+### POST /api/v1/lifecycle/shutdown
+
+Requests a graceful runtime shutdown.
+
+### POST /api/v1/proactive/context/capture
+
+Captures the current workspace context for proactive analysis.
+
+### POST /api/v1/sandbox/users/:holabossUserId/workspaces/:workspaceId/exec
+
+Executes a command in the workspace sandbox context.
+
+### POST /api/v1/internal/workspaces/:workspaceId/resolved-apps/start
+
+Starts resolved applications for a workspace (internal bootstrap path).

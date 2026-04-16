@@ -1,0 +1,98 @@
+---
+title: "Environment engineering: the environment defines the agent"
+description: "How holaOS treats the agent environment as the primary design surface — not just the model — enabling long-horizon, continuable agent work."
+---
+
+The dominant approach to building with AI agents treats the model as the thing to optimize. Pick a better model, write a better prompt, and the agent improves. holaOS starts from a different premise: the model is only one input into agent behavior. What actually shapes whether an agent is useful over time is the environment it operates inside — the memory it can recall, the workspace it can read and write, the tools it can invoke, the continuity it maintains across runs, and the harness that governs how it executes.
+
+This is what **environment engineering** means: designing the agent's operating environment as the primary product, rather than treating each agent run as an isolated task handed to a model.
+
+## The problem with one-off task execution
+
+Most agent systems work as request-response loops. A user sends a message, the agent responds, and the session ends. The next conversation starts fresh — no memory of what was done, no awareness of the workspace state, no ability to pick up where things left off.
+
+This model works for simple tasks. It breaks down for long-horizon work.
+
+<Info>
+Long-horizon work means tasks that span multiple sessions, require referencing prior decisions, or depend on accumulated context that no single conversation can hold in its window.
+</Info>
+
+One-off execution has several concrete failure modes:
+
+- The agent cannot recall what it decided in a prior session without being told again.
+- Operators cannot inspect what the agent produced without diving into conversation logs.
+- There is no place for the agent's learned behaviors or preferences to persist across workspaces or users.
+- Each run starts from the same baseline regardless of how much useful context was generated before.
+
+holaOS is built to address these gaps directly.
+
+## How holaOS structures the environment
+
+holaOS gives agents a structured operating system composed of four primary surfaces. Each surface has a defined ownership model — what the operator configures, what the runtime writes, and what the agent reads.
+
+<CardGroup cols={2}>
+  <Card title="Runtime" icon="cpu">
+    The TypeScript API server that manages workspaces, sessions, inputs, and post-run jobs. All agent execution flows through the runtime.
+  </Card>
+  <Card title="Memory" icon="database">
+    Durable, scoped memory entries backed by the filesystem and an optional vector index. Memory persists across sessions and is recalled at run time.
+  </Card>
+  <Card title="Workspace" icon="folder">
+    A structured filesystem contract between the operator and the runtime. The workspace holds authored surfaces (skills, tools, apps) and runtime-owned state.
+  </Card>
+  <Card title="Harness" icon="box">
+    The stable execution boundary that the agent runs inside. The Pi harness is the built-in executor. The harness abstracts the model, tools, and prompt assembly away from the runtime loop.
+  </Card>
+</CardGroup>
+
+These four surfaces are not independent. They are designed to compose: the runtime uses the workspace to locate the harness, the harness reads memory to assemble the prompt, and post-run jobs write memory back after each turn completes.
+
+## The environment as the output surface
+
+In a one-off task model, the agent's output is its response text. In holaOS, the agent's output includes:
+
+- **Turn results** stored in the `TurnResultRecord`, including assistant text, tool usage summaries, stop reason, and compacted summaries
+- **Memory entries** written by the `evolve` post-run job to the filesystem memory store, scoped to the workspace, user preferences, or identity
+- **Skill candidates** — drafts of reusable workflows identified by the evolve job and staged for operator review
+- **Workspace apps** that the agent can build and run inside the workspace
+
+The environment is both the input to each run and the accumulation point for everything the agent learns and produces.
+
+<Note>
+The `enqueueEvolveJob` function in `evolve.ts` queues a background job after each turn completes. That job calls `writeTurnDurableMemory` to persist what the agent observed, and `reviewTurnForSkillCandidate` to identify new reusable workflows worth promoting.
+</Note>
+
+## The self-evolution thesis
+
+Environment engineering enables a specific property: the agent's capability set can grow over time without operator intervention. holaOS calls this self-evolution.
+
+Self-evolution works through the evolve pipeline:
+
+1. After each agent turn, the runtime enqueues an `evolve` post-run job keyed to the turn's `input_id`.
+2. The evolve job reviews the turn result for reusable patterns using a background model client.
+3. If a reusable pattern is found, it writes a skill candidate to the workspace's `.holaboss/evolve` directory.
+4. A `TaskProposalRecord` is created so the operator can review, refine, and promote the candidate to a live workspace skill.
+5. Promoted skills become part of the agent's capability manifest on future runs.
+
+<Info>
+Self-evolution is not automatic promotion. The operator reviews every candidate before it becomes a live skill. The pipeline surfaces candidates; humans decide what gets promoted.
+</Info>
+
+The key insight is that the workspace skill set is not fixed at operator configuration time. It grows as the agent encounters reusable workflows, and the environment is the place where that growth is recorded, reviewed, and activated.
+
+## What environment engineering means in practice
+
+Designing the environment means making deliberate decisions about:
+
+- **What the workspace contains** — which skills are authored, which tools are exposed, which apps are installed
+- **What memory is written** — which observations are durable, how they are scoped (workspace vs. preference vs. identity), and when they expire
+- **How sessions resume** — what compaction boundaries capture, what turn summaries preserve, and how the harness reconstructs context after a long gap
+- **What the harness enforces** — which tools are enabled by session kind, what timeout limits apply, whether browser tools are available
+
+None of these decisions are made by the model. They are made by the operator through the environment. The model executes inside the environment the operator designs.
+
+<Tip>
+The most reliable way to improve agent behavior in holaOS is to improve the environment: add a skill that captures a workflow the agent keeps re-deriving, add a memory entry that records a preference the agent keeps re-asking about, or update the workspace config to enable a tool the agent needs.
+</Tip>
+
+The environment is not scaffolding around the model. It is the product.

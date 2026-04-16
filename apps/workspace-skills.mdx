@@ -1,0 +1,184 @@
+---
+title: "Workspace skills: extending agent behavior in holaOS"
+description: "Workspace skills are markdown files the runtime loads into the agent's system prompt, providing reusable, workspace-specific instructions and workflows."
+---
+
+Skills are the lightweight way to extend what a holaOS agent knows how to do without writing code. Each skill is a markdown file that describes a workflow, set of conventions, or domain-specific guidance. The runtime loads skill content directly into the agent's system prompt at the start of every session.
+
+## What a skill is
+
+A skill is a directory under `skills/` in the workspace root. The directory name is the skill ID, and it must contain a `SKILL.md` file with valid YAML frontmatter:
+
+```markdown
+---
+name: data-pipeline
+description: Steps for building and validating data ingestion pipelines.
+---
+
+# Data Pipeline
+
+## When to use
+- When creating or modifying any ETL pipeline in this workspace.
+
+## Workflow
+1. Define the source schema before writing any transformation.
+2. Run `npm run validate-schema` after every field change.
+3. Always write a dry-run path before enabling the live writer.
+
+## Examples
+- Adding a new Postgres source: see `pipelines/postgres-example/`
+```
+
+The `name` field in frontmatter **must exactly match the directory name** under `skills/`. If they differ, the skill is silently skipped during resolution.
+
+## Skill directory layout
+
+```
+workspace/
+├── workspace.yaml
+├── skills/
+│   ├── data-pipeline/
+│   │   └── SKILL.md
+│   └── api-conventions/
+│       ├── SKILL.md
+│       └── openapi-template.yaml   ← helper files are allowed
+└── apps/
+```
+
+Skills can include additional helper files alongside `SKILL.md`. The agent can reference them in the skill markdown, and the skill resolver exposes the entire `source_dir` to the harness.
+
+## Frontmatter format
+
+```yaml
+---
+name: <skill-id>        # required; must match directory name exactly
+description: <string>   # required; one-line summary used in UI and logs
+---
+```
+
+Both fields are required. A skill file missing either field, or whose `name` does not match its directory, will not be loaded. The runtime validates this in `hasValidSkillFormat`:
+
+```typescript
+// runtime/api-server/src/workspace-skills.ts
+function hasValidSkillFormat(params: { skillId: string; skillFilePath: string }): boolean {
+  const content = fs.readFileSync(params.skillFilePath, "utf8");
+  const frontmatter = skillFrontmatter(content);
+  if (!frontmatter) return false;
+  const frontmatterName = normalizeSkillId(normalizedFrontmatterString(frontmatter.name));
+  if (!frontmatterName || frontmatterName !== params.skillId) return false;
+  const description = normalizedFrontmatterString(frontmatter.description);
+  if (!description) return false;
+  return true;
+}
+```
+
+## Embedded skills vs workspace skills
+
+holaOS ships with two **embedded skills** that are always available, regardless of what is in the workspace `skills/` directory:
+
+| Skill ID | Description |
+|---|---|
+| `skill-creator` | Guide for creating effective skills. Activated when creating or updating a skill. |
+| `skill-installer` | Install Codex skills from curated sources or GitHub paths. |
+
+These live in `runtime/harnesses/src/embedded-skills/` in the holaOS source. They use the same `SKILL.md` format as workspace skills.
+
+<Info>
+  Never write workspace skills into `runtime/harnesses/src/embedded-skills/`. That directory is part of the holaOS runtime source and is not workspace-local. Workspace skills always go under `skills/` at your workspace root.
+</Info>
+
+## How skills are resolved
+
+The `resolveWorkspaceSkills` function merges embedded and workspace-local skills. Workspace skills take precedence — if a workspace skill has the same `skill_id` as an embedded skill, the workspace version wins:
+
+```typescript
+// runtime/api-server/src/workspace-skills.ts
+export function resolveWorkspaceSkills(workspaceDirInput: string): ResolvedWorkspaceSkill[] {
+  const embeddedSkills = listSkillsInRoot(embeddedSkillsRoot(), "embedded");
+  const workspaceSkills = resolveWorkspaceLocalSkills(workspaceDirInput);
+
+  const resolvedById = new Map<string, ResolvedWorkspaceSkill>();
+  for (const skill of workspaceSkills) {
+    resolvedById.set(skill.skill_id, skill);
+  }
+  for (const skill of embeddedSkills) {
+    resolvedById.set(skill.skill_id, skill);   // embedded overwrites workspace here ...
+  }
+  // ... but the ordered list is built from embedded-first, then workspace-unique,
+  // so the final map entry (workspace) wins when the ordered IDs are re-resolved.
+  // ...
+}
+```
+
+The resolved type carries the skill's origin so the UI can distinguish workspace skills from embedded ones:
+
+```typescript
+export type ResolvedSkillOrigin = "workspace" | "embedded";
+
+export interface ResolvedWorkspaceSkill {
+  skill_id: string;
+  source_dir: string;
+  origin: ResolvedSkillOrigin;
+}
+```
+
+## The evolve worker and automatic skill proposals
+
+The evolve worker (`evolve-skill-review.ts`) watches completed agent turns and proposes new workspace skills based on recurring patterns in the agent's behavior. After every `SKILL_REVIEW_INTERVAL_TURNS` turns, it:
+
+1. Samples recent turn summaries and user messages
+2. Queries a lightweight memory model for a skill candidate
+3. Filters candidates below the minimum confidence threshold (`0.72`)
+4. Writes accepted candidates as drafts for human review
+
+Proposed skills are surfaced in the holaOS desktop UI. Approving a proposal writes the `SKILL.md` file to `skills/<slug>/` and immediately makes it available for future sessions.
+
+<Tip>
+  You don't need to wait for the evolve worker. Write skills manually whenever you notice the agent making the same mistake twice or needing the same domain context repeatedly.
+</Tip>
+
+## Skill security and path traversal
+
+The runtime enforces that skill directories cannot escape the workspace root:
+
+```typescript
+const relativeSkillsPath = path.relative(workspaceRealRoot, skillsRealPath);
+if (relativeSkillsPath.startsWith("..") || path.isAbsolute(relativeSkillsPath)) {
+  return [];
+}
+```
+
+Skill IDs are also normalized — they cannot contain `/`, `\`, or null bytes, and cannot be `.` or `..`. This means you cannot create a skill named `../etc` or use symlinks to point outside the workspace.
+
+## Adding a skill
+
+<Steps>
+  <Step title="Create the skill directory">
+    ```bash
+    mkdir -p skills/my-skill
+    ```
+  </Step>
+  <Step title="Write SKILL.md">
+    ```markdown
+    ---
+    name: my-skill
+    description: One-line description of what this skill teaches the agent.
+    ---
+
+    # My Skill
+
+    ## When to use
+    - Describe the trigger condition here.
+
+    ## Workflow
+    1. First step.
+    2. Second step.
+
+    ## Examples
+    - Concrete example from this workspace.
+    ```
+  </Step>
+  <Step title="Verify it loads">
+    The next agent session will include the skill in the system prompt. Ask the agent to list its active skills to confirm.
+  </Step>
+</Steps>

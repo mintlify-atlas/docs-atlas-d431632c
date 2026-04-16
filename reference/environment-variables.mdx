@@ -1,0 +1,176 @@
+---
+title: "Environment variables reference for holaOS"
+description: "All environment variables consumed by the holaOS desktop app, runtime API server, memory system, and workspace app layer, with types and defaults."
+---
+
+holaOS reads environment variables at several layers. This page lists every recognized variable grouped by the subsystem that reads it.
+
+---
+
+## Desktop
+
+These variables are read by the Electron desktop application. Copy `desktop/.env.example` to `desktop/.env` and fill in the values for local development.
+
+<ParamField body="HOLABOSS_AUTH_BASE_URL" type="string" required>
+  Base URL of the Holaboss authentication service.
+
+  **Example:** `https://api.holaboss.ai`
+</ParamField>
+
+<ParamField body="HOLABOSS_AUTH_SIGN_IN_URL" type="string" required>
+  Full URL of the sign-in page. The desktop opens this URL in a browser window when the user needs to authenticate.
+
+  **Example:** `https://www.holaboss.ai/signin`
+</ParamField>
+
+<ParamField body="HOLABOSS_BACKEND_BASE_URL" type="string" required>
+  Base URL of the Holaboss backend service that the desktop communicates with.
+
+  **Example:** `http://35.160.37.189`
+</ParamField>
+
+<ParamField body="SENTRY_DSN" type="string">
+  Sentry Data Source Name for error tracking in the desktop process. Leave empty to disable Sentry reporting entirely.
+</ParamField>
+
+---
+
+## Runtime API server
+
+These variables control the holaOS runtime API server (`runtime/api-server`).
+
+### Server binding
+
+<ParamField body="SANDBOX_RUNTIME_API_PORT" type="string">
+  Port on which the runtime API server listens. Falls back to `SANDBOX_AGENT_BIND_PORT`, then `PORT`, then `3060`.
+</ParamField>
+
+<ParamField body="SANDBOX_RUNTIME_API_HOST" type="string">
+  Host/interface to bind to. Falls back to `SANDBOX_AGENT_BIND_HOST`, then `0.0.0.0`.
+</ParamField>
+
+<ParamField body="PORT" type="string">
+  Generic port fallback. Read when neither `SANDBOX_RUNTIME_API_PORT` nor `SANDBOX_AGENT_BIND_PORT` is set.
+</ParamField>
+
+### Observability
+
+<ParamField body="HOLABOSS_RUNTIME_VERSION" type="string">
+  Runtime release string reported to Sentry as the `release` tag.
+</ParamField>
+
+<ParamField body="SENTRY_DSN" type="string">
+  Sentry DSN for the runtime API server. Leave empty to disable.
+</ParamField>
+
+<ParamField body="SENTRY_ENVIRONMENT" type="string">
+  Sentry environment tag. Defaults to `"production"`.
+</ParamField>
+
+### Model proxy
+
+<ParamField body="HOLABOSS_MODEL_PROXY_BASE_URL" type="string">
+  Base URL of the model proxy service. Used when `runtime-config.json` does not specify `model_proxy_base_url`. Must be an absolute `http(s)` URL with no query string or fragment.
+</ParamField>
+
+<ParamField body="HOLABOSS_MODEL_PROXY_BASE_URL_DEFAULT" type="string">
+  Fallback model proxy URL consulted only when `includeDefault` is requested internally. Lower priority than `HOLABOSS_MODEL_PROXY_BASE_URL`.
+</ParamField>
+
+<ParamField body="HOLABOSS_DEFAULT_MODEL" type="string">
+  Default model identifier (e.g. `openai/gpt-5.4`). Used when neither `runtime-config.json` nor any other source specifies a model.
+
+  **Default:** `openai/gpt-5.4`
+</ParamField>
+
+### Runtime configuration
+
+<ParamField body="HOLABOSS_RUNTIME_CONFIG_PATH" type="string">
+  Absolute path to the `runtime-config.json` file. When unset, defaults to `{HB_SANDBOX_ROOT}/state/runtime-config.json`.
+</ParamField>
+
+<ParamField body="HB_SANDBOX_ROOT" type="string">
+  Root directory of the sandbox filesystem. Used to derive the default config path and workspace paths.
+
+  **Default:** `/holaboss`
+</ParamField>
+
+<ParamField body="SANDBOX_AGENT_HARNESS" type="string">
+  Selects the agent harness plugin to load. Currently only `"pi"` is supported; defaults to `"pi"` when unset or empty.
+</ParamField>
+
+<ParamField body="HOLABOSS_SANDBOX_AUTH_TOKEN" type="string">
+  Auth token injected by the sandbox environment. Overrides `auth_token` from `runtime-config.json`.
+</ParamField>
+
+<ParamField body="HOLABOSS_USER_ID" type="string">
+  User ID injected by the sandbox environment. Overrides `user_id` from `runtime-config.json`.
+</ParamField>
+
+### Harness timeouts
+
+<ParamField body="HOLABOSS_HARNESS_RUN_TIMEOUT_S" type="string">
+  Maximum seconds a harness run is allowed before it is aborted. Must be an integer between 1 and 7200.
+
+  **Default:** `1800`
+</ParamField>
+
+<ParamField body="HOLABOSS_TASK_PROPOSAL_HARNESS_RUN_TIMEOUT_S" type="string">
+  Override timeout for `task_proposal` session kinds. Defaults to the larger of `HOLABOSS_HARNESS_RUN_TIMEOUT_S` and `7200`.
+</ParamField>
+
+---
+
+## Apps
+
+These variables affect workspace app installation and execution.
+
+<ParamField body="HOLABOSS_APP_ARCHIVE_DIR" type="string">
+  Custom directory where downloaded app archives are stored. When unset, archives are placed under `os.tmpdir()`.
+</ParamField>
+
+<ParamField body="HOLABOSS_APP_ARCHIVE_URL_ALLOWLIST" type="string">
+  Comma-separated list of URL prefixes allowed during app archive installation. The built-in allowlist already includes `https://github.com/holaboss-ai/holaboss-apps/releases/download/`. Extra prefixes here extend (not replace) that list. `http://` URLs are only permitted if they appear in this override list.
+</ParamField>
+
+<ParamField body="HB_APP_SETUP_TIMEOUT_MS" type="string">
+  Milliseconds to wait for an app's setup phase to complete. Falls back to `APP_SETUP_TIMEOUT_MS`.
+</ParamField>
+
+<ParamField body="APP_SETUP_TIMEOUT_MS" type="string">
+  Legacy fallback for `HB_APP_SETUP_TIMEOUT_MS`.
+</ParamField>
+
+---
+
+## Workspace skills
+
+<ParamField body="HOLABOSS_EMBEDDED_SKILLS_DIR" type="string">
+  Overrides the path to the directory containing embedded (built-in) agent skills. When unset, skills are loaded from `{runtimeRoot}/harnesses/src/embedded-skills`.
+</ParamField>
+
+<ParamField body="HOLABOSS_RUNTIME_ROOT" type="string">
+  Overrides the runtime root directory, which is used to derive the embedded skills path. When unset, the runtime package directory is used.
+</ParamField>
+
+---
+
+## Bridge SDK (workspace apps)
+
+These variables are read by `@holaboss/bridge` inside running workspace apps. They are injected automatically by the runtime; you do not set them manually in production.
+
+<ParamField body="HOLABOSS_APP_GRANT" type="string">
+  OAuth-style grant token used to authenticate calls through the broker proxy.
+</ParamField>
+
+<ParamField body="HOLABOSS_WORKSPACE_ID" type="string">
+  Workspace ID used as a fallback when the `x-holaboss-workspace-id` header is absent.
+</ParamField>
+
+<ParamField body="HOLABOSS_INTEGRATION_BROKER_URL" type="string">
+  Explicit base URL for the integration broker proxy. Auto-derived from `SANDBOX_RUNTIME_API_PORT` when unset.
+</ParamField>
+
+<ParamField body="WORKSPACE_API_URL" type="string">
+  Explicit workspace API URL. Auto-derived from the broker URL when unset.
+</ParamField>

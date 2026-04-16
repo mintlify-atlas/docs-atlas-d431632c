@@ -1,0 +1,467 @@
+---
+title: "Harness contracts: the runner protocol for holaOS"
+description: "TypeScript interfaces, event types, and CLI request/response contracts that define the communication protocol between the holaOS runtime and agent harnesses."
+---
+
+The holaOS runtime communicates with agent harnesses through a set of typed contracts defined in `runtime/harness-host/src/contracts.ts`. This page documents every interface, union type, and constant in that module.
+
+---
+
+## Constants
+
+### `HARNESS_HOST_NOT_IMPLEMENTED_EXIT_CODE`
+
+```typescript
+const HARNESS_HOST_NOT_IMPLEMENTED_EXIT_CODE = 86;
+```
+
+Exit code returned by a harness process to signal that the requested command is not implemented. The runtime treats this code as a graceful "not supported" rather than an error.
+
+---
+
+## JSON primitive types
+
+```typescript
+type JsonPrimitive = boolean | number | string | null;
+type JsonValue = JsonPrimitive | JsonObject | JsonValue[];
+type JsonObject = { [key: string]: JsonValue };
+```
+
+These types are used throughout the contracts wherever untyped JSON payloads are passed.
+
+---
+
+## Runner events
+
+### `KnownRunnerEventType`
+
+The set of event type strings that the runtime understands:
+
+```typescript
+type KnownRunnerEventType =
+  | "run_claimed"
+  | "run_started"
+  | "pi_native_event"
+  | "thinking_delta"
+  | "output_delta"
+  | "tool_call"
+  | "skill_invocation"
+  | "auto_compaction_start"
+  | "auto_compaction_end"
+  | "run_completed"
+  | "run_failed";
+```
+
+| Event type | When emitted |
+|---|---|
+| `run_claimed` | The harness has accepted and locked the run request |
+| `run_started` | Execution has begun; the agent is now processing the instruction |
+| `pi_native_event` | A native event from the Pi harness backend |
+| `thinking_delta` | An incremental chunk of the model's reasoning/thinking output |
+| `output_delta` | An incremental chunk of the model's text output |
+| `tool_call` | The model requested a tool invocation |
+| `skill_invocation` | A skill was triggered during the run |
+| `auto_compaction_start` | Context auto-compaction started (conversation history being summarised) |
+| `auto_compaction_end` | Context auto-compaction completed |
+| `run_completed` | The run finished successfully |
+| `run_failed` | The run terminated with an error |
+
+### `RunnerOutputEvent`
+
+The envelope wrapping every event emitted by the harness:
+
+```typescript
+interface RunnerOutputEvent {
+  session_id: string;
+  input_id: string;
+  sequence: number;
+  event_type: RunnerEventType;
+  timestamp?: string;
+  payload: Record<string, unknown>;
+}
+```
+
+<ResponseField name="session_id" type="string">
+  ID of the agent session this event belongs to.
+</ResponseField>
+
+<ResponseField name="input_id" type="string">
+  ID of the input/turn that triggered the run.
+</ResponseField>
+
+<ResponseField name="sequence" type="number">
+  Monotonically increasing integer within the run; consumers use this to order events.
+</ResponseField>
+
+<ResponseField name="event_type" type="RunnerEventType">
+  One of the `KnownRunnerEventType` values listed above.
+</ResponseField>
+
+<ResponseField name="timestamp" type="string">
+  Optional ISO-8601 timestamp of when the event was emitted.
+</ResponseField>
+
+<ResponseField name="payload" type="Record<string, unknown>">
+  Event-specific data. Shape varies by `event_type`.
+</ResponseField>
+
+---
+
+## Runner request
+
+### `RunnerRequest`
+
+Top-level request object sent to the harness to initiate a run. Passed as base64-encoded JSON on the CLI.
+
+```typescript
+interface RunnerRequest {
+  holaboss_user_id?: string | null;
+  workspace_id: string;
+  session_id: string;
+  session_kind?: string | null;
+  input_id: string;
+  instruction: string;
+  attachments?: HarnessHostInputAttachmentPayload[];
+  context: JsonObject;
+  model?: string | null;
+  thinking_value?: string | null;
+  debug: boolean;
+}
+```
+
+<ParamField body="holaboss_user_id" type="string | null">
+  Optional Holaboss user ID for the run. Used for attribution.
+</ParamField>
+
+<ParamField body="workspace_id" type="string" required>
+  The workspace in which the run executes.
+</ParamField>
+
+<ParamField body="session_id" type="string" required>
+  The agent session receiving this run.
+</ParamField>
+
+<ParamField body="session_kind" type="string | null">
+  Session kind that may alter harness behaviour (e.g. `"workspace_session"`, `"task_proposal"`).
+</ParamField>
+
+<ParamField body="input_id" type="string" required>
+  Unique ID for this input/turn.
+</ParamField>
+
+<ParamField body="instruction" type="string" required>
+  The user instruction text to execute.
+</ParamField>
+
+<ParamField body="attachments" type="HarnessHostInputAttachmentPayload[]">
+  Optional file or image attachments associated with the instruction.
+</ParamField>
+
+<ParamField body="context" type="JsonObject" required>
+  Arbitrary JSON context payload passed through to the harness.
+</ParamField>
+
+<ParamField body="model" type="string | null">
+  Optional model override for this run.
+</ParamField>
+
+<ParamField body="thinking_value" type="string | null">
+  Optional thinking/reasoning budget hint passed to the model.
+</ParamField>
+
+<ParamField body="debug" type="boolean" required>
+  When `true`, the harness emits additional diagnostic information.
+</ParamField>
+
+### `HarnessHostInputAttachmentPayload`
+
+Describes a single file or image attachment:
+
+```typescript
+interface HarnessHostInputAttachmentPayload {
+  id: string;
+  kind: "image" | "file";
+  name: string;
+  mime_type: string;
+  size_bytes: number;
+  workspace_path: string;
+}
+```
+
+---
+
+## Pi harness request
+
+### `HarnessHostPiRequest`
+
+The expanded request object that the Pi harness backend receives. Built by the runtime from the `RunnerRequest` plus resolved model, skill, and MCP configuration.
+
+```typescript
+interface HarnessHostPiRequest {
+  workspace_id: string;
+  workspace_dir: string;
+  session_id: string;
+  browser_tools_enabled?: boolean;
+  input_id: string;
+  instruction: string;
+  attachments?: HarnessHostInputAttachmentPayload[];
+  thinking_value?: string | null;
+  debug: boolean;
+  harness_session_id?: string | null;
+  persisted_harness_session_id?: string | null;
+  provider_id: string;
+  model_id: string;
+  timeout_seconds: number;
+  runtime_api_base_url?: string | null;
+  system_prompt: string;
+  workspace_skill_dirs: string[];
+  mcp_servers: JsonObject[];
+  mcp_tool_refs: HarnessHostPiMcpToolRef[];
+  workspace_config_checksum: string;
+  run_started_payload: JsonObject;
+  model_client: HarnessHostModelClientPayload;
+}
+```
+
+<ResponseField name="workspace_dir" type="string">
+  Absolute path to the workspace directory on disk.
+</ResponseField>
+
+<ResponseField name="browser_tools_enabled" type="boolean">
+  Whether desktop browser tools have been staged for this session.
+</ResponseField>
+
+<ResponseField name="harness_session_id" type="string | null">
+  Harness-internal session ID for session continuity across turns.
+</ResponseField>
+
+<ResponseField name="persisted_harness_session_id" type="string | null">
+  A previously-persisted session ID that the harness should restore.
+</ResponseField>
+
+<ResponseField name="provider_id" type="string">
+  Resolved provider ID (e.g. `"holaboss_model_proxy"`).
+</ResponseField>
+
+<ResponseField name="model_id" type="string">
+  Resolved model ID to use for this run.
+</ResponseField>
+
+<ResponseField name="timeout_seconds" type="number">
+  Maximum wall-clock seconds allowed for this run.
+</ResponseField>
+
+<ResponseField name="runtime_api_base_url" type="string | null">
+  Base URL of the runtime API server, made available to the harness for callback calls.
+</ResponseField>
+
+<ResponseField name="system_prompt" type="string">
+  Fully-resolved system prompt for the agent.
+</ResponseField>
+
+<ResponseField name="workspace_skill_dirs" type="string[]">
+  Filesystem paths to skill directories staged for this workspace.
+</ResponseField>
+
+<ResponseField name="mcp_servers" type="JsonObject[]">
+  Serialised MCP server configurations.
+</ResponseField>
+
+<ResponseField name="mcp_tool_refs" type="HarnessHostPiMcpToolRef[]">
+  Resolved MCP tool references.
+</ResponseField>
+
+<ResponseField name="workspace_config_checksum" type="string">
+  Checksum of the workspace configuration used to detect staleness.
+</ResponseField>
+
+<ResponseField name="run_started_payload" type="JsonObject">
+  Payload emitted with the `run_started` event.
+</ResponseField>
+
+<ResponseField name="model_client" type="HarnessHostModelClientPayload">
+  Model client credentials and configuration.
+</ResponseField>
+
+### `HarnessHostPiMcpToolRef`
+
+```typescript
+interface HarnessHostPiMcpToolRef {
+  tool_id: string;
+  server_id: string;
+  tool_name: string;
+}
+```
+
+---
+
+## Model client configuration
+
+### `HarnessHostModelClientPayload`
+
+Credentials and connection details for the model provider client:
+
+```typescript
+interface HarnessHostModelClientPayload {
+  model_proxy_provider: string;
+  api_key: string;
+  base_url?: string | null;
+  default_headers?: Record<string, string> | null;
+}
+```
+
+<ResponseField name="model_proxy_provider" type="string">
+  Provider identifier (e.g. `"holaboss_model_proxy"`).
+</ResponseField>
+
+<ResponseField name="api_key" type="string">
+  API key or auth token for the provider.
+</ResponseField>
+
+<ResponseField name="base_url" type="string | null">
+  Optional base URL override for the provider endpoint.
+</ResponseField>
+
+<ResponseField name="default_headers" type="Record<string, string> | null">
+  Optional headers to include with every model request.
+</ResponseField>
+
+---
+
+## Agent runtime config CLI
+
+These types are used for the CLI sub-command that resolves and returns the agent runtime configuration.
+
+### `AgentRuntimeConfigCliRequest`
+
+```typescript
+interface AgentRuntimeConfigCliRequest {
+  session_id: string;
+  workspace_id: string;
+  input_id: string;
+  runtime_exec_model_proxy_api_key?: string | null;
+  runtime_exec_sandbox_id?: string | null;
+  runtime_exec_run_id?: string | null;
+  selected_model?: string | null;
+  default_provider_id: string;
+  session_mode: string;
+  workspace_config_checksum: string;
+  workspace_skill_ids: string[];
+  default_tools: string[];
+  extra_tools: string[];
+  tool_server_id_map?: Record<string, string> | null;
+  resolved_mcp_tool_refs: Array<Record<string, string>>;
+  resolved_mcp_server_ids?: string[];
+  resolved_output_schemas: Record<string, JsonObject>;
+  agent: AgentRuntimeConfigGeneralMemberPayload;
+}
+```
+
+### `AgentRuntimeConfigCliResponse`
+
+```typescript
+interface AgentRuntimeConfigCliResponse {
+  provider_id: string;
+  model_id: string;
+  mode: string;
+  system_prompt: string;
+  model_client: HarnessHostModelClientPayload;
+  tools: Record<string, boolean>;
+  workspace_tool_ids: string[];
+  workspace_skill_ids: string[];
+  output_schema_member_id?: string | null;
+  output_format?: JsonObject | null;
+  workspace_config_checksum: string;
+}
+```
+
+### `AgentRuntimeConfigGeneralMemberPayload`
+
+```typescript
+interface AgentRuntimeConfigGeneralMemberPayload {
+  id: string;
+  model: string;
+  prompt: string;
+  role?: string | null;
+}
+```
+
+---
+
+## Workspace MCP sidecar CLI
+
+These types are used for the CLI sub-command that starts or reuses a workspace MCP sidecar process.
+
+### `WorkspaceMcpSidecarCliRequest`
+
+```typescript
+interface WorkspaceMcpSidecarCliRequest {
+  workspace_dir: string;
+  physical_server_id: string;
+  expected_fingerprint: string;
+  timeout_ms: number;
+  readiness_timeout_s: number;
+  catalog_json_base64: string;
+}
+```
+
+<ParamField body="workspace_dir" type="string" required>
+  Absolute path to the workspace directory.
+</ParamField>
+
+<ParamField body="physical_server_id" type="string" required>
+  Stable identifier for the MCP server instance.
+</ParamField>
+
+<ParamField body="expected_fingerprint" type="string" required>
+  Content fingerprint used to detect whether an existing process is stale.
+</ParamField>
+
+<ParamField body="timeout_ms" type="number" required>
+  Milliseconds before the launch attempt is considered timed-out.
+</ParamField>
+
+<ParamField body="readiness_timeout_s" type="number" required>
+  Seconds to wait for the sidecar to report readiness after starting.
+</ParamField>
+
+<ParamField body="catalog_json_base64" type="string" required>
+  Base64-encoded JSON catalog describing the MCP server.
+</ParamField>
+
+### `WorkspaceMcpSidecarCliResponse`
+
+```typescript
+interface WorkspaceMcpSidecarCliResponse {
+  url: string;
+  pid: number;
+  reused: boolean;
+}
+```
+
+<ResponseField name="url" type="string">
+  URL at which the sidecar is listening.
+</ResponseField>
+
+<ResponseField name="pid" type="number">
+  Process ID of the sidecar.
+</ResponseField>
+
+<ResponseField name="reused" type="boolean">
+  `true` if an existing healthy sidecar was reused; `false` if a new process was started.
+</ResponseField>
+
+---
+
+## Decoding utilities
+
+The contracts module exports helper functions that decode base64-encoded JSON payloads sent over the CLI:
+
+| Function | Decodes to |
+|---|---|
+| `decodeRunnerRequestBase64(encoded)` | `RunnerRequest` |
+| `decodeHarnessHostPiRequestBase64(encoded)` | `HarnessHostPiRequest` |
+| `decodeAgentRuntimeConfigCliRequestBase64(encoded)` | `AgentRuntimeConfigCliRequest` |
+| `decodeWorkspaceMcpSidecarCliRequestBase64(encoded)` | `WorkspaceMcpSidecarCliRequest` |
+
+All functions validate required fields and throw descriptive `Error` instances for malformed input.

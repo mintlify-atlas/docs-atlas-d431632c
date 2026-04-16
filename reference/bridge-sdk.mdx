@@ -1,0 +1,363 @@
+---
+title: "@holaboss/bridge: SDK for workspace app development"
+description: "Integration proxy, workspace output helpers, and turn-context utilities for module apps running inside the Holaboss workspace runtime."
+---
+
+`@holaboss/bridge` provides the primitives that workspace apps need to participate in the Holaboss runtime: proxying requests through provider integrations, publishing outputs and session artifacts, and reading turn-scoped context from incoming MCP headers.
+
+## Installation
+
+<CodeGroup>
+
+```bash npm
+npm install @holaboss/bridge
+```
+
+```bash bun
+bun add @holaboss/bridge
+```
+
+</CodeGroup>
+
+<Note>
+  Node ≥ 20 is required. The package is pure ESM but ships a CJS bundle as well.
+</Note>
+
+## Environment variables
+
+The bridge SDK reads several environment variables that are automatically injected when an app runs inside a Holaboss workspace:
+
+| Variable | Purpose |
+|---|---|
+| `HOLABOSS_APP_GRANT` | OAuth-style grant token used to authenticate broker proxy calls |
+| `HOLABOSS_WORKSPACE_ID` | Workspace ID used as a fallback when headers are absent |
+| `HOLABOSS_INTEGRATION_BROKER_URL` | Explicit broker base URL; auto-derived from `SANDBOX_RUNTIME_API_PORT` when absent |
+| `SANDBOX_RUNTIME_API_PORT` / `SANDBOX_AGENT_BIND_PORT` / `PORT` | Runtime API port used to construct the broker URL |
+| `WORKSPACE_API_URL` | Explicit workspace API URL; auto-derived from the broker URL when absent |
+
+---
+
+## API reference
+
+### `createIntegrationClient(provider)`
+
+Creates a proxy client for a named provider integration. All API calls are routed through the Holaboss broker proxy instead of calling the provider directly.
+
+```typescript
+import { createIntegrationClient } from "@holaboss/bridge";
+
+const client = createIntegrationClient("github");
+
+const response = await client.proxy<{ login: string }>({
+  method: "GET",
+  endpoint: "/user",
+});
+
+console.log(response.data?.login);
+```
+
+<ParamField body="provider" type="string" required>
+  The provider slug (e.g. `"github"`, `"notion"`, `"linear"`). Must match a configured integration.
+</ParamField>
+
+**Returns** an `IntegrationClient`:
+
+```typescript
+interface IntegrationClient {
+  proxy<T = unknown>(request: ProxyRequest): Promise<ProxyResponse<T>>;
+}
+```
+
+#### `ProxyRequest`
+
+```typescript
+interface ProxyRequest {
+  method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
+  endpoint: string;
+  body?: unknown;
+  headers?: Record<string, string>;
+}
+```
+
+<ParamField body="method" type='"GET" | "POST" | "PUT" | "PATCH" | "DELETE"' required>
+  HTTP method to forward to the provider.
+</ParamField>
+
+<ParamField body="endpoint" type="string" required>
+  Provider-relative URL path (e.g. `"/user"` or `"/repos/owner/repo/issues"`).
+</ParamField>
+
+<ParamField body="body" type="unknown">
+  Optional request body. Will be JSON-serialised by the proxy.
+</ParamField>
+
+<ParamField body="headers" type="Record<string, string>">
+  Optional extra headers to forward.
+</ParamField>
+
+#### `ProxyResponse<T>`
+
+```typescript
+interface ProxyResponse<T = unknown> {
+  data: T | null;
+  status: number;
+  headers: Record<string, string>;
+}
+```
+
+---
+
+### `resolveHolabossTurnContext(headers)`
+
+Extracts Holaboss turn context from MCP request headers. Returns `null` when the required workspace or session ID is missing, which prevents artifact publishing outside an active agent turn.
+
+```typescript
+import { resolveHolabossTurnContext } from "@holaboss/bridge";
+
+// Inside an MCP tool handler:
+export async function myTool(args: unknown, { headers }: { headers: unknown }) {
+  const ctx = resolveHolabossTurnContext(headers);
+  if (!ctx) {
+    return { result: "not running inside a Holaboss turn" };
+  }
+  // ctx.workspaceId, ctx.sessionId, ctx.inputId are available
+}
+```
+
+<ParamField body="headers" type="unknown" required>
+  The headers object from the MCP request. Accepts both `Headers` instances (with `.get()`) and plain `Record<string, string>` objects.
+</ParamField>
+
+**Returns** `HolabossTurnContext | null`:
+
+```typescript
+interface HolabossTurnContext {
+  workspaceId: string;
+  sessionId: string;
+  inputId?: string | null;
+}
+```
+
+<ResponseField name="workspaceId" type="string">
+  The active workspace ID, sourced from the `x-holaboss-workspace-id` header or the `HOLABOSS_WORKSPACE_ID` env var.
+</ResponseField>
+
+<ResponseField name="sessionId" type="string">
+  The active agent session ID, sourced from the `x-holaboss-session-id` header.
+</ResponseField>
+
+<ResponseField name="inputId" type="string | null">
+  The active input/turn ID, sourced from the `x-holaboss-input-id` header. `null` if the header is absent.
+</ResponseField>
+
+---
+
+### `createAppOutput(request)`
+
+Creates a workspace output record if the app is running inside a Holaboss workspace. Returns `null` during local development without a workspace context.
+
+```typescript
+import { createAppOutput } from "@holaboss/bridge";
+
+const output = await createAppOutput({
+  outputType: "report",
+  title: "Monthly Summary",
+  moduleId: "my-module",
+  status: "ready",
+  metadata: { generated_at: new Date().toISOString() },
+});
+```
+
+<ParamField body="request" type="CreateAppOutputRequest" required>
+  <Expandable title="CreateAppOutputRequest fields">
+    <ParamField body="outputType" type="string" required>
+      Identifier for the output type (e.g. `"report"`, `"chart"`).
+    </ParamField>
+    <ParamField body="title" type="string" required>
+      Human-readable title shown in the workspace UI.
+    </ParamField>
+    <ParamField body="moduleId" type="string" required>
+      ID of the module (app) producing the output.
+    </ParamField>
+    <ParamField body="moduleResourceId" type="string | null">
+      Optional resource ID within the module.
+    </ParamField>
+    <ParamField body="platform" type="string | null">
+      Optional platform tag.
+    </ParamField>
+    <ParamField body="status" type="string | null">
+      Initial status. If provided and not `"draft"`, an immediate `updateAppOutput` call is issued.
+    </ParamField>
+    <ParamField body="metadata" type="Record<string, unknown> | null">
+      Arbitrary key-value metadata attached to the output.
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+**Returns** `Promise<WorkspaceOutputPayload | null>`.
+
+---
+
+### `updateAppOutput(outputId, request)`
+
+Updates an existing workspace output record. Returns `null` when output publishing is not available.
+
+```typescript
+import { updateAppOutput } from "@holaboss/bridge";
+
+await updateAppOutput(output.id, {
+  status: "ready",
+  metadata: { row_count: 1234 },
+});
+```
+
+<ParamField body="outputId" type="string" required>
+  The `id` of the output to update (from a previous `createAppOutput` call).
+</ParamField>
+
+<ParamField body="request" type="UpdateAppOutputRequest" required>
+  <Expandable title="UpdateAppOutputRequest fields">
+    <ParamField body="title" type="string | null">
+      Updated title.
+    </ParamField>
+    <ParamField body="status" type="string | null">
+      Updated status.
+    </ParamField>
+    <ParamField body="moduleResourceId" type="string | null">
+      Updated module resource ID.
+    </ParamField>
+    <ParamField body="metadata" type="Record<string, unknown> | null">
+      Updated metadata. Replaces the previous value.
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+**Returns** `Promise<WorkspaceOutputPayload | null>`.
+
+---
+
+### `publishSessionArtifact(context, request)`
+
+Publishes an app-origin artifact scoped to the active assistant turn. Returns `null` when output publishing is not available.
+
+```typescript
+import { publishSessionArtifact } from "@holaboss/bridge";
+
+const artifact = await publishSessionArtifact(ctx, {
+  artifactType: "csv_export",
+  externalId: "file-abc123",
+  title: "Exported data",
+  moduleId: "my-module",
+});
+```
+
+<ParamField body="context" type="HolabossTurnContext" required>
+  Turn context returned by `resolveHolabossTurnContext`. Provides `workspaceId`, `sessionId`, and `inputId`.
+</ParamField>
+
+<ParamField body="request" type="PublishSessionArtifactRequest" required>
+  <Expandable title="PublishSessionArtifactRequest fields">
+    <ParamField body="artifactType" type="string" required>
+      Type identifier for the artifact.
+    </ParamField>
+    <ParamField body="externalId" type="string" required>
+      Stable external identifier for the artifact (e.g. a file ID or object key).
+    </ParamField>
+    <ParamField body="title" type="string" required>
+      Human-readable title for the artifact.
+    </ParamField>
+    <ParamField body="moduleId" type="string" required>
+      ID of the module producing the artifact.
+    </ParamField>
+    <ParamField body="moduleResourceId" type="string | null">
+      Optional module resource ID.
+    </ParamField>
+    <ParamField body="platform" type="string | null">
+      Optional platform tag.
+    </ParamField>
+    <ParamField body="inputId" type="string | null">
+      Override for the input ID. Defaults to `context.inputId`.
+    </ParamField>
+    <ParamField body="metadata" type="Record<string, unknown> | null">
+      Arbitrary metadata.
+    </ParamField>
+    <ParamField body="artifactId" type="string | null">
+      Optional existing artifact ID to associate with (for updates).
+    </ParamField>
+    <ParamField body="changeType" type="string | null">
+      Optional change type descriptor.
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+**Returns** `Promise<SessionArtifactPayload | null>`:
+
+```typescript
+interface SessionArtifactPayload {
+  id: string;
+  output_id?: string | null;
+  session_id: string | null;
+  workspace_id: string;
+  input_id: string | null;
+  artifact_type: string;
+  external_id: string;
+  platform: string | null;
+  title: string | null;
+  metadata: Record<string, unknown>;
+  created_at: string;
+}
+```
+
+---
+
+### `buildAppResourcePresentation(input)`
+
+Builds the presentation object used for app resources. Use it when the workspace UI should open a resource in a predictable view and path.
+
+```typescript
+import { buildAppResourcePresentation } from "@holaboss/bridge";
+
+const presentation = buildAppResourcePresentation({
+  view: "spreadsheet",
+  path: "/sheets/main",
+});
+// { kind: "app_resource", view: "spreadsheet", path: "/sheets/main" }
+```
+
+<ParamField body="input" type="AppOutputPresentationInput" required>
+  <Expandable title="AppOutputPresentationInput fields">
+    <ParamField body="view" type="string" required>
+      The view type to open the resource in.
+    </ParamField>
+    <ParamField body="path" type="string" required>
+      Path within the app. A leading `/` is added automatically if absent.
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+**Returns** `{ kind: "app_resource"; view: string; path: string }`.
+
+---
+
+## `WorkspaceOutputPayload` type reference
+
+```typescript
+interface WorkspaceOutputPayload {
+  id: string;
+  workspace_id: string;
+  output_type: string;
+  title: string;
+  status: string;
+  module_id: string | null;
+  module_resource_id: string | null;
+  file_path: string | null;
+  html_content: string | null;
+  session_id: string | null;
+  artifact_id: string | null;
+  folder_id: string | null;
+  platform: string | null;
+  metadata: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+}
+```

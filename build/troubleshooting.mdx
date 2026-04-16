@@ -1,0 +1,207 @@
+---
+title: "Troubleshoot common holaOS installation and runtime issues"
+description: "Fixes for the most common local setup failures: native module errors, missing runtime bundles, port conflicts, typecheck failures, and unresponsive APIs."
+---
+
+This page covers the failure modes most commonly encountered during local development setup and runtime operation. Each section describes what went wrong, why it happens, and the exact command to fix it.
+
+<AccordionGroup>
+  <Accordion title="Electron won't launch — native module error">
+    **Symptom:** Electron fails to open with an error like `Error: The module '.../better-sqlite3.node' was compiled against a different Node.js version`.
+
+    **Cause:** The `better-sqlite3` native addon was compiled for a different Electron version than the one currently installed. This happens when the Electron version changes or after a fresh `npm install`.
+
+    **Fix:** Rebuild the native module for the current Electron version:
+
+    ```bash
+    npm run rebuild:native
+    # from inside desktop/:
+    node ./node_modules/@electron/rebuild/lib/cli.js -f -w better-sqlite3
+    ```
+
+    This is also run automatically by the `predev` hook, so a subsequent `npm run desktop:dev` will rebuild before launching.
+  </Accordion>
+
+  <Accordion title="Runtime bundle missing — Electron opens but runtime fails to start">
+    **Symptom:** The desktop opens but immediately shows an error that the runtime could not be started, or `desktop/out/runtime-<platform>/` is empty or missing.
+
+    **Cause:** The runtime bundle was never staged, or was deleted by a `clean` command.
+
+    **Fix:** Stage the runtime bundle from local source:
+
+    ```bash
+    npm run desktop:prepare-runtime:local
+    ```
+
+    Or fetch the latest published bundle instead:
+
+    ```bash
+    npm run desktop:prepare-runtime
+    ```
+
+    After staging, re-run `npm run desktop:dev`. The `predev` hook's `ensure-runtime-bundle.mjs` script also catches a missing bundle automatically — so simply re-running dev is often sufficient.
+  </Accordion>
+
+  <Accordion title=".env not found — desktop validation fails">
+    **Symptom:** The `predev` hook exits with a message about a missing `.env` file, or `validate-dev-env.mjs` reports that required environment variables are not set.
+
+    **Cause:** `desktop/.env` does not exist. This file is required but excluded from version control.
+
+    **Fix:** Create it from the example:
+
+    ```bash
+    cp desktop/.env.example desktop/.env
+    ```
+
+    The example file contains working defaults for the public OSS configuration. Only modify values that your environment or provider requires. The minimum file content is:
+
+    ```bash
+    HOLABOSS_AUTH_BASE_URL=https://api.holaboss.ai
+    HOLABOSS_AUTH_SIGN_IN_URL=https://www.holaboss.ai/signin
+    HOLABOSS_BACKEND_BASE_URL=http://35.160.37.189
+    ```
+  </Accordion>
+
+  <Accordion title="Port 5173 already in use — Vite dev server fails to bind">
+    **Symptom:** Starting `npm run desktop:dev` fails with `EADDRINUSE: address already in use :::5173`.
+
+    **Cause:** A previous development session left the Vite renderer process running. The `predev` hook includes `kill-port 5173` to handle this, but it may not have run if the session was interrupted abnormally.
+
+    **Fix:** Kill the process holding port 5173 and re-run:
+
+    ```bash
+    npx kill-port 5173
+    npm run desktop:dev
+    ```
+
+    The `kill-port 5173` step runs automatically in the `predev` hook on every `npm run desktop:dev` invocation.
+  </Accordion>
+
+  <Accordion title="TypeScript typecheck fails">
+    **Symptom:** `npm run desktop:typecheck` exits with type errors.
+
+    **Cause:** Type errors introduced by recent changes, or the app SDK build artifacts are missing (which causes the `@holaboss/app-sdk` import to fail to resolve).
+
+    **Fix:** First ensure the app SDK is built:
+
+    ```bash
+    npm run sdk:app-sdk:install
+    npm run sdk:app-sdk:build
+    ```
+
+    Then re-run the typecheck:
+
+    ```bash
+    npm run desktop:typecheck
+    ```
+
+    The `pretypecheck` hook runs `ensure-app-sdk.mjs` automatically, so the above manual steps are only needed if the SDK is in a broken state. If type errors persist after the SDK is built, they must be fixed in source before continuing.
+  </Accordion>
+
+  <Accordion title="Runtime API not responding — requests to localhost:3060 time out">
+    **Symptom:** `curl http://localhost:3060/healthz` times out or returns a connection refused error.
+
+    **Cause:** The runtime process is not running, failed to start, or is bound to a different port.
+
+    **Fix steps:**
+
+    1. Check that the desktop is running with the runtime subprocess active. The desktop starts the runtime at launch — if the desktop is not open, the runtime is not running.
+
+    2. If running the runtime independently, verify the process is up and check the port:
+
+    ```bash
+    # Check what's running on port 3060
+    lsof -i :3060
+
+    # Or try the default port alternatives
+    curl http://localhost:3060/healthz
+    ```
+
+    3. Confirm the runtime bundle was staged before starting:
+
+    ```bash
+    ls desktop/out/runtime-*/
+    ```
+
+    4. Check the `SANDBOX_RUNTIME_API_PORT` environment variable — if set to a value other than `3060`, the server will be on that port instead.
+
+    5. In independent (Docker) mode, confirm the container is running and port mapping is correct:
+
+    ```bash
+    docker ps
+    docker logs holaboss-runtime
+    ```
+  </Accordion>
+
+  <Accordion title="Runtime test suite fails">
+    **Symptom:** `npm run runtime:test` reports test failures.
+
+    **Cause:** Runtime package dependencies are not installed, or the packages have not been built before the tests run.
+
+    **Fix:** Install and build all runtime packages before running the tests:
+
+    ```bash
+    npm run runtime:state-store:install
+    npm run runtime:state-store:build
+    npm run runtime:harness-host:install
+    npm run runtime:harness-host:build
+    npm run runtime:api-server:install
+    npm run runtime:test
+    ```
+
+    The `runtime:test` script runs all three test suites (state-store, harness-host, api-server) in sequence.
+  </Accordion>
+
+  <Accordion title="desktop:prepare-runtime:local fails — build errors in runtime source">
+    **Symptom:** `npm run desktop:prepare-runtime:local` exits with TypeScript or build errors.
+
+    **Cause:** The runtime source packages have compilation errors, or their dependencies are not installed.
+
+    **Fix:** Install and typecheck the affected runtime package directly:
+
+    ```bash
+    # For api-server errors:
+    npm run runtime:api-server:install
+    npm run runtime:api-server:typecheck
+
+    # For state-store errors:
+    npm run runtime:state-store:install
+    npm run runtime:state-store:typecheck
+
+    # For harness-host errors:
+    npm run runtime:harness-host:install
+    npm run runtime:harness-host:typecheck
+    ```
+
+    Fix reported errors in the relevant package, then re-run `npm run desktop:prepare-runtime:local`.
+  </Accordion>
+
+  <Accordion title="runtime-config.json errors — bad config JSON or missing required fields">
+    **Symptom:** `GET /api/v1/runtime/config` returns a 400 with a message like `invalid runtime config JSON` or `HOLABOSS_MODEL_PROXY_BASE_URL or runtime-config.json:model_proxy_base_url is required`.
+
+    **Cause:** The `runtime-config.json` file contains invalid JSON, or a required field is absent from both the config file and the corresponding environment variable.
+
+    **Fix for invalid JSON:** Edit or delete the config file at `$HB_SANDBOX_ROOT/state/runtime-config.json` (default `/holaboss/state/runtime-config.json`). Deleting it causes the runtime to start with empty defaults.
+
+    **Fix for missing required field:** Either set the environment variable before starting the runtime, or write the value through the config API:
+
+    ```bash
+    curl -X PUT http://localhost:3060/api/v1/runtime/config \
+      -H "Content-Type: application/json" \
+      -d '{"model_proxy_base_url": "https://your-proxy.example.com"}'
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Quick reference command table
+
+| Problem | Fix |
+|---|---|
+| Native module error on Electron launch | `npm run rebuild:native` |
+| Runtime bundle missing | `npm run desktop:prepare-runtime:local` |
+| `.env` not found | `cp desktop/.env.example desktop/.env` |
+| Port 5173 in use | `npx kill-port 5173` |
+| TypeScript typecheck fails | `npm run sdk:app-sdk:build && npm run desktop:typecheck` |
+| Runtime API not responding | Check that desktop is running; confirm `SANDBOX_RUNTIME_API_PORT` |
+| Runtime tests failing | Install and build runtime packages first, then `npm run runtime:test` |
+| Bad `runtime-config.json` | Delete or fix the file at `$HB_SANDBOX_ROOT/state/runtime-config.json` |

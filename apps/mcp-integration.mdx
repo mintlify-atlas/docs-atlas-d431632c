@@ -1,0 +1,210 @@
+---
+title: "MCP server integration in holaOS workspaces"
+description: "How holaOS registers MCP servers in workspace.yaml, routes agent tool calls through the MCP sidecar, and surfaces app tools via the workspace MCP host."
+---
+
+holaOS uses the [Model Context Protocol (MCP)](https://modelcontextprotocol.io) as the standard interface between agents and workspace apps. Every running app can expose a set of MCP tools. The runtime discovers them through `workspace.yaml`, starts a sidecar process to manage the connection, and injects tool references into each agent harness invocation.
+
+## MCP registry in workspace.yaml
+
+When an app starts successfully, the runtime writes an entry into the `mcp_registry` section of `workspace.yaml`:
+
+```yaml
+mcp_registry:
+  servers:
+    my-app:
+      type: remote
+      url: http://localhost:13100/mcp/sse
+      enabled: true
+      timeout_ms: 30000
+      started_at: "2026-04-16T10:00:00.000Z"
+  allowlist:
+    tool_ids:
+      - my-app.search
+      - my-app.create_record
+```
+
+Tool IDs in the allowlist are always prefixed with `{appId}.`. This namespacing prevents collisions between tools from different apps and lets the harness route calls to the correct server.
+
+The registry is managed by `writeWorkspaceMcpRegistryEntry` and `removeWorkspaceMcpRegistryEntry` in `workspace-apps.ts`:
+
+```typescript
+// runtime/api-server/src/workspace-apps.ts
+servers[appId] = {
+  type: "remote",
+  url: `http://localhost:${port}${mcpPath}`,
+  enabled: true,
+  timeout_ms: params.mcpTimeoutMs,
+  started_at: startedAt,
+};
+```
+
+The `started_at` timestamp is bumped every time the underlying app process restarts, signaling any MCP client that has cached an SSE stream to reconnect.
+
+## Workspace MCP host
+
+The workspace MCP host (`workspace-mcp-host.ts`) is an HTTP server that exposes a standard MCP endpoint backed by workspace-local tool implementations. It is launched as a subprocess by the MCP sidecar.
+
+It accepts a `WorkspaceMcpHostCliRequest` encoded as a base64 JSON string:
+
+```typescript
+// runtime/api-server/src/workspace-mcp-host.ts
+export interface WorkspaceMcpHostCliRequest {
+  workspace_dir: string;
+  catalog_json_base64: string;
+  host: string;
+  port: number;
+  server_name: string;
+}
+```
+
+The `catalog_json_base64` payload describes which tools to load and from where. On startup the host:
+
+1. Decodes the catalog and loads each tool module from the workspace directory
+2. Builds a list of `WorkspaceMcpToolDefinition` objects for the MCP `list_tools` response
+3. Starts an HTTP server on `host:port` that handles MCP `POST /mcp` requests via `StreamableHTTPServerTransport`
+
+```typescript
+export interface WorkspaceMcpToolDefinition {
+  name: string;
+  title?: string;
+  description?: string;
+  inputSchema: Record<string, unknown>;
+  outputSchema?: Record<string, unknown>;
+  annotations?: Record<string, unknown>;
+  _meta?: Record<string, unknown>;
+}
+```
+
+## MCP sidecar
+
+The sidecar (`workspace-mcp-sidecar.ts`) is the process manager for workspace MCP hosts. Rather than starting a new host process on every agent turn, the sidecar checks whether an existing host is still alive and has the same configuration fingerprint. If it does, the sidecar returns the existing URL without spawning a new process:
+
+```typescript
+// runtime/api-server/src/workspace-mcp-sidecar.ts
+export interface WorkspaceMcpSidecarCliRequest {
+  workspace_dir: string;
+  physical_server_id: string;
+  expected_fingerprint: string;
+  timeout_ms: number;
+  readiness_timeout_s: number;
+  catalog_json_base64: string;
+}
+
+export interface WorkspaceMcpSidecarCliResponse {
+  url: string;
+  pid: number;
+  reused: boolean;
+}
+```
+
+The `physical_server_id` is a stable identifier for the MCP server (typically the `app_id`). The `expected_fingerprint` is a hash of the tool catalog configuration — if it changes, the sidecar terminates the old host and starts a fresh one.
+
+State is persisted to `.holaboss/workspace-mcp-sidecar-state.json` next to the workspace directory, so it survives runtime restarts:
+
+```typescript
+type SidecarStateEntry = {
+  physical_server_id: string;
+  url: string;
+  pid: number;
+  config_fingerprint: string;
+  updated_at: string;
+};
+```
+
+<Note>
+  The sidecar is launched by the harness host, not the API server. It is a separate process that runs for the lifetime of the MCP host it manages.
+</Note>
+
+## MCP tool refs in agent requests
+
+When the agent harness is invoked, it receives `mcp_tool_refs` — a list of tool references that tell it which MCP tools are available and which server each belongs to. This type is defined in `contracts.ts`:
+
+```typescript
+// runtime/harness-host/src/contracts.ts
+export interface HarnessHostPiMcpToolRef {
+  tool_id: string;    // e.g. "my-app.search"
+  server_id: string;  // e.g. "my-app"
+  tool_name: string;  // e.g. "search"
+}
+```
+
+These refs are part of the full `HarnessHostPiRequest` sent to the Pi harness:
+
+```typescript
+export interface HarnessHostPiRequest {
+  workspace_id: string;
+  workspace_dir: string;
+  session_id: string;
+  // ...
+  mcp_servers: JsonObject[];
+  mcp_tool_refs: HarnessHostPiMcpToolRef[];
+  workspace_config_checksum: string;
+  // ...
+}
+```
+
+The harness uses `tool_id` (the fully qualified `{appId}.{toolName}` name) to identify the tool in the model's tool list, `server_id` to locate the sidecar URL, and `tool_name` to call the correct method on the MCP server.
+
+## Declaring MCP tools in app.runtime.yaml
+
+Apps declare their MCP tools in `app.runtime.yaml`. The names in the `mcp.tools` list become the `tool_name` part of the tool ID in the registry:
+
+```yaml
+app_id: my-app
+
+mcp:
+  transport: http-sse
+  port: 13100
+  path: /mcp
+  tools:
+    - search
+    - create_record
+    - delete_record
+```
+
+After the app starts, the registry allowlist will contain:
+- `my-app.search`
+- `my-app.create_record`
+- `my-app.delete_record`
+
+<Warning>
+  The `mcp.port` field is required in `app.runtime.yaml`. The runtime will refuse to start an app whose manifest is missing it.
+</Warning>
+
+## MCP request headers
+
+The harness injects context headers into every MCP tool call so apps can identify the current agent session:
+
+| Header | Value |
+|---|---|
+| `x-holaboss-workspace-id` | The workspace that owns this session |
+| `x-holaboss-session-id` | The current agent session ID |
+| `x-holaboss-input-id` | The input (user message) that triggered this turn |
+
+Use `resolveHolabossTurnContext` from `@holaboss/bridge` to extract these headers in your tool handler:
+
+```typescript
+import { resolveHolabossTurnContext } from "@holaboss/bridge";
+
+// headers is the inbound MCP request headers object
+const ctx = resolveHolabossTurnContext(headers);
+if (ctx) {
+  console.log(ctx.workspaceId, ctx.sessionId, ctx.inputId);
+}
+```
+
+`resolveHolabossTurnContext` returns `null` when the headers are absent, which is the normal case during local development and testing outside the agent runtime.
+
+## Sidecar log files
+
+The MCP sidecar writes stdout and stderr for each host process to files in `.holaboss/` next to the workspace directory:
+
+```
+.holaboss/
+├── workspace-mcp-sidecar-state.json
+├── my-app.workspace-mcp-sidecar.stdout.log
+└── my-app.workspace-mcp-sidecar.stderr.log
+```
+
+These logs persist across runtime restarts and are scoped per `physical_server_id`.

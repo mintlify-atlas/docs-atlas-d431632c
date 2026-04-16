@@ -1,0 +1,177 @@
+---
+title: "Deploy the holaOS runtime without the desktop app"
+description: "Run the portable holaOS runtime as a standalone Docker container, configure required environment variables, and learn how it differs from desktop mode."
+---
+
+The holaOS runtime can be deployed as a standalone service independent of the Electron desktop app. This is useful for CI environments, server-side agent execution, or embedding the runtime into your own infrastructure. The runtime ships a Docker-based deployment path under `runtime/deploy/`.
+
+## What the independent runtime provides
+
+When running without the desktop, the runtime still provides:
+
+- The full Fastify API server on the configured port
+- Workspace, session, memory, app, and config endpoints
+- The agent harness host and state store
+- SSE streaming for run events
+
+What the desktop provides on top (auth UI, renderer, file-browser chrome) is not present in standalone mode. Operators interact with the runtime exclusively through the HTTP API.
+
+## Dockerfile overview
+
+The runtime container is built from `runtime/deploy/Dockerfile`:
+
+```dockerfile
+ARG TOOLCHAIN_IMAGE=holaboss/sandbox-base-toolchain:dev
+FROM ${TOOLCHAIN_IMAGE}
+
+# Copies runtime source packages and builds the runtime root
+COPY runtime/deploy/ /tmp/runtime-source/deploy/
+COPY runtime/harnesses/ ...
+COPY runtime/harness-host/ ...
+COPY runtime/state-store/ ...
+COPY runtime/api-server/ ...
+
+RUN /tmp/runtime-source/deploy/build_runtime_root.sh /opt/holaboss-runtime
+
+# Assembles the final app layout
+RUN cp -R /opt/holaboss-runtime/api-server /app/api-server
+RUN cp -R /opt/holaboss-runtime/harness-host /app/harness-host
+RUN cp -R /opt/holaboss-runtime/state-store /app/state-store
+
+EXPOSE 8080
+ENTRYPOINT ["/usr/bin/tini", "--", "/entrypoint.sh"]
+```
+
+The container exposes port `8080` by default. `tini` is used as PID 1 to correctly reap zombie child processes — important when the runtime spawns agent subprocesses or DinD containerd shims.
+
+## Entrypoint
+
+`runtime/deploy/entrypoint.sh` sources two bootstrap scripts from the built runtime root and delegates to the shared main entrypoint:
+
+```bash
+source /opt/holaboss-runtime/bootstrap/shared.sh
+source /opt/holaboss-runtime/bootstrap/container.sh
+
+holaboss_container_bootstrap
+holaboss_runtime_shared_main "$@"
+```
+
+`holaboss_container_bootstrap` prepares the container environment (directory structure, permissions). `holaboss_runtime_shared_main` starts the API server process.
+
+## Environment variables
+
+Configure the runtime at container launch time with these environment variables:
+
+### Server binding
+
+| Variable | Default | Description |
+|---|---|---|
+| `SANDBOX_RUNTIME_API_PORT` | `3060` | Port the API server binds to |
+| `SANDBOX_AGENT_BIND_PORT` | `3060` | Legacy alias for the port |
+| `PORT` | `3060` | Generic port fallback |
+| `SANDBOX_RUNTIME_API_HOST` | `0.0.0.0` | Host/interface the server binds to |
+| `SANDBOX_AGENT_BIND_HOST` | `0.0.0.0` | Legacy alias for the host |
+
+### Filesystem
+
+| Variable | Default | Description |
+|---|---|---|
+| `HB_SANDBOX_ROOT` | `/holaboss` | Root directory for all runtime state (workspace, config, memory) |
+
+The runtime derives other paths from `HB_SANDBOX_ROOT`:
+
+- Workspace files: `$HB_SANDBOX_ROOT/workspace/`
+- Runtime config: `$HB_SANDBOX_ROOT/state/runtime-config.json`
+
+### Model and auth
+
+| Variable | Description |
+|---|---|
+| `HOLABOSS_MODEL_PROXY_BASE_URL` | Base URL for the OpenAI-compatible model proxy |
+| `HOLABOSS_DEFAULT_MODEL` | Default model in `provider/model` format (e.g. `openai/gpt-4o`) |
+| `HOLABOSS_SANDBOX_AUTH_TOKEN` | Auth token for the Holaboss integration |
+| `HOLABOSS_USER_ID` | User ID for the Holaboss integration |
+| `HOLABOSS_RUNTIME_CONFIG_PATH` | Override path for `runtime-config.json` |
+
+### Observability
+
+| Variable | Description |
+|---|---|
+| `SENTRY_DSN` | Sentry DSN for error tracking — leave empty to disable |
+| `HOLABOSS_RUNTIME_VERSION` | Runtime version string reported to Sentry as the release |
+| `SENTRY_ENVIRONMENT` | Sentry environment tag (default: `production`) |
+
+### Agent harness
+
+| Variable | Description |
+|---|---|
+| `SANDBOX_AGENT_HARNESS` | Selects the agent harness plugin (e.g. `pi`, `claude_code`) |
+
+## Running the container
+
+```bash
+docker run -d \
+  --name holaboss-runtime \
+  -p 3060:3060 \
+  -e HB_SANDBOX_ROOT=/holaboss \
+  -e HOLABOSS_MODEL_PROXY_BASE_URL=https://your-proxy.example.com \
+  -e HOLABOSS_DEFAULT_MODEL=openai/gpt-4o \
+  -e SANDBOX_RUNTIME_API_PORT=3060 \
+  -v holaboss-state:/holaboss \
+  holaboss/runtime:latest
+```
+
+<Note>
+  Mount a persistent volume at `$HB_SANDBOX_ROOT` (default `/holaboss`) to preserve workspace files, memory, and runtime config across container restarts.
+</Note>
+
+## Port mapping
+
+The Dockerfile `EXPOSE`s port `8080`, but the API server binds to `SANDBOX_RUNTIME_API_PORT` (default `3060`). If deploying behind a reverse proxy or load balancer, either:
+
+- Set `SANDBOX_RUNTIME_API_PORT=8080` to align with the exposed port, or
+- Map the container port explicitly: `-p 3060:3060`
+
+## How independent mode differs from desktop mode
+
+| Aspect | Desktop mode | Independent mode |
+|---|---|---|
+| Runtime start | Desktop main process starts/stops the runtime subprocess | Container entrypoint starts the runtime directly |
+| Config file path | Written to the desktop user data directory | `$HB_SANDBOX_ROOT/state/runtime-config.json` |
+| Port | Desktop communicates on the configured port locally | Exposed as a network service |
+| Auth UI | Handled by the desktop Electron renderer | Not present — use the config API directly |
+| User data isolation | `HOLABOSS_DESKTOP_USER_DATA_DIR` separates dev from prod | Use different `HB_SANDBOX_ROOT` mount paths |
+| App installs | Desktop downloads archives and POSTs to `/api/v1/apps/install-archive` | Same endpoint, but the caller must supply the archive |
+
+## Building the runtime bundle locally
+
+To build the runtime bundle from local source (the same artifact that the desktop stages):
+
+```bash
+npm run desktop:prepare-runtime:local
+```
+
+The resulting bundle lands in `desktop/out/runtime-<platform>/`. The build internally calls `runtime/deploy/build_runtime_root.mjs` (or the equivalent `.sh` script) to compile and assemble the runtime packages.
+
+For platform-specific builds:
+
+```bash
+npm run desktop:prepare-runtime:local:macos
+npm run desktop:prepare-runtime:local:linux
+npm run desktop:prepare-runtime:local:windows
+```
+
+## Health check
+
+Once the container is running, verify the runtime is up:
+
+```bash
+curl http://localhost:3060/healthz
+# {"ok":true}
+```
+
+Then confirm the config is loaded:
+
+```bash
+curl http://localhost:3060/api/v1/runtime/status
+```

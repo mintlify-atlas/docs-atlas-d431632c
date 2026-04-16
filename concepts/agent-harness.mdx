@@ -1,0 +1,192 @@
+---
+title: "Agent harness: the stable execution boundary in holaOS"
+description: "How the harness system in holaOS separates agent execution from the runtime loop, and how the Pi harness implements the built-in executor."
+---
+
+Every agent run in holaOS executes inside a harness. The harness is the stable boundary between the runtime's orchestration layer and the actual model invocation: it receives a structured request, runs the agent, and streams events back to the runtime through a defined event protocol. The runtime never calls the model directly. It delegates to the harness and processes events.
+
+This separation is what makes holaOS's runtime layer model-agnostic. You can swap the underlying executor without changing how the runtime tracks sessions, writes memory, or stores turn results.
+
+## What the harness boundary is
+
+The harness boundary is defined by two contracts: the request the runtime sends in, and the events the executor streams back.
+
+**Inbound:** The runtime builds a `HarnessHostPiRequest` containing everything the agent needs to run — the workspace path, the session and input IDs, the fully assembled system prompt, the model client credentials, the MCP tool references, and the workspace skill directories.
+
+**Outbound:** The executor emits a sequence of `RunnerOutputEvent` values, each typed with a `KnownRunnerEventType`.
+
+The harness host process decodes the request from a base64-encoded payload passed as a CLI argument, runs the agent, and writes events to stdout for the runtime to consume.
+
+## The Pi harness
+
+Pi is the built-in harness. It is the default executor in holaOS and the only harness plugin registered by the runtime out of the box.
+
+```typescript
+// from harness-registry.ts
+const piRuntimeHarnessPlugin: RuntimeHarnessPlugin = {
+  id: "pi",
+  adapter: piAdapter,
+  // ...
+}
+
+const HARNESS_PLUGINS = [piRuntimeHarnessPlugin] as const;
+```
+
+The `DEFAULT_HARNESS_ID` constant resolves to `"pi"`. When the runtime normalizes a harness ID from the workspace record and the value is empty or unrecognized, it falls back to `"pi"`.
+
+The Pi harness handles:
+- Assembling the agent's context from the workspace skill directories and MCP tool refs passed in the request
+- Managing the model conversation loop including tool calls and thinking tokens
+- Emitting runner events for each phase of execution
+- Triggering auto-compaction when context window pressure requires it
+
+## The harness host CLI
+
+The harness host is a separate process launched by the runtime for each agent turn. It reads a base64-encoded request payload, runs the agent, and streams events back.
+
+The request payload for the Pi harness is decoded with `decodeHarnessHostPiRequestBase64`:
+
+```typescript
+// from contracts.ts
+export interface HarnessHostPiRequest {
+  workspace_id: string;
+  workspace_dir: string;
+  session_id: string;
+  browser_tools_enabled?: boolean;
+  input_id: string;
+  instruction: string;
+  attachments?: HarnessHostInputAttachmentPayload[];
+  thinking_value?: string | null;
+  debug: boolean;
+  harness_session_id?: string | null;
+  persisted_harness_session_id?: string | null;
+  provider_id: string;
+  model_id: string;
+  timeout_seconds: number;
+  runtime_api_base_url?: string | null;
+  system_prompt: string;
+  workspace_skill_dirs: string[];
+  mcp_servers: JsonObject[];
+  mcp_tool_refs: HarnessHostPiMcpToolRef[];
+  workspace_config_checksum: string;
+  run_started_payload: JsonObject;
+  model_client: HarnessHostModelClientPayload;
+}
+```
+
+The `workspace_skill_dirs` array contains the resolved paths to each active skill's source directory. The `mcp_tool_refs` array maps each tool ID to its MCP server and tool name. The `workspace_config_checksum` lets the harness detect when the workspace configuration has changed since the last run.
+
+<Note>
+The `harness_session_id` and `persisted_harness_session_id` fields allow the Pi harness to resume an existing conversation context within the underlying model provider's session API, where supported. This is separate from the holaOS session ID — it tracks the model-side conversation state.
+</Note>
+
+## Harness registration
+
+The runtime maintains a registry of harness plugins and adapters. The registry is built at startup from the `HARNESS_DEFINITIONS` constant imported from the harnesses package.
+
+```typescript
+// from harness-registry.ts
+export interface RuntimeHarnessPlugin {
+  id: string;
+  adapter: RuntimeHarnessAdapter;
+  stageBrowserTools: (params: { ... }) => { changed: boolean; toolIds: string[] };
+  stageRuntimeTools: (params: { workspaceDir: string }) => { changed: boolean; toolIds: string[] };
+  stageCommands: (params: { workspaceDir: string }) => { changed: boolean; commandIds: string[] };
+  stageSkills: (params: { workspaceDir: string; runtimeRoot: string }) => {
+    changed: boolean;
+    skillIds: string[];
+  };
+  prepareRun: (params: RuntimeHarnessPrepareRunContext) => Promise<void>;
+  describeRuntimeStatus: (params: { ... }) => Promise<RuntimeHarnessPluginStatus>;
+  handleRuntimeConfigUpdated: (params: { ... }) => Promise<void>;
+  ensureReady: (fetchImpl: typeof fetch) => Promise<void>;
+  backendBaseUrl: (params: { workspaceId: string; workspaceDir: string }) => string;
+  timeoutSeconds: (params: { request: HarnessRunnerRequestLike }) => number;
+}
+```
+
+The `stageBrowserTools`, `stageRuntimeTools`, `stageCommands`, and `stageSkills` methods are called during run preparation to build the capability manifest that the runtime passes to the agent. The Pi plugin's `stageBrowserTools` method checks whether the session kind is `workspace_session` before enabling desktop browser tool IDs:
+
+```typescript
+// from harness-registry.ts — Pi plugin stageBrowserTools
+stageBrowserTools(params) {
+  const browserEnabled = Boolean(
+    browserToolsAllowedForSession(params.sessionKind) &&
+    params.browserConfig.desktopBrowserEnabled &&
+    params.browserConfig.desktopBrowserUrl.trim() &&
+    params.browserConfig.desktopBrowserAuthToken.trim()
+  );
+  return { changed: false, toolIds: browserEnabled ? [...DESKTOP_BROWSER_TOOL_IDS] : [] };
+},
+```
+
+## Harness timeout policy
+
+The harness timeout is controlled per-request based on the session kind. The Pi plugin's `timeoutSeconds` method reads from environment variables with safe defaults:
+
+- Standard sessions: `HOLABOSS_HARNESS_RUN_TIMEOUT_S` (default: 1800 seconds / 30 minutes)
+- Task proposal sessions: `HOLABOSS_TASK_PROPOSAL_HARNESS_RUN_TIMEOUT_S` (default: the larger of the standard timeout and 7200 seconds)
+
+All timeout values are clamped between 1 second and 7200 seconds (2 hours) by the internal `timeoutSecondsFromEnv` helper.
+
+## Runner event types
+
+The harness host emits events as a stream of `RunnerOutputEvent` objects. Every event carries a `session_id`, `input_id`, `sequence` number, `event_type`, optional `timestamp`, and a `payload` object.
+
+The full set of known event types from `contracts.ts`:
+
+```typescript
+// from contracts.ts
+export type KnownRunnerEventType =
+  | "run_claimed"
+  | "run_started"
+  | "pi_native_event"
+  | "thinking_delta"
+  | "output_delta"
+  | "tool_call"
+  | "skill_invocation"
+  | "auto_compaction_start"
+  | "auto_compaction_end"
+  | "run_completed"
+  | "run_failed";
+```
+
+Each event type represents a distinct phase or signal in the agent's execution lifecycle:
+
+<AccordionGroup>
+  <Accordion title="run_claimed / run_started">
+    `run_claimed` signals that a worker has taken ownership of the input. `run_started` signals that the harness has begun executing — the model invocation has started.
+  </Accordion>
+  <Accordion title="thinking_delta / output_delta">
+    Streaming deltas from the model. `thinking_delta` carries incremental thinking token text (for models that expose chain-of-thought). `output_delta` carries incremental assistant response text. Both are consumed by the runtime to build the turn's `assistantText`.
+  </Accordion>
+  <Accordion title="tool_call">
+    Emitted each time the agent invokes a tool. The payload contains the tool name, input arguments, and result. Tool call events are aggregated into the `TurnResultRecord`'s `toolUsageSummary`.
+  </Accordion>
+  <Accordion title="skill_invocation">
+    Emitted when the agent invokes a workspace skill. Skills are not tools — they are loaded instruction sets injected into the agent's context at the start of a run. A `skill_invocation` event signals that the agent explicitly referenced a skill during its turn.
+  </Accordion>
+  <Accordion title="auto_compaction_start / auto_compaction_end">
+    Pair of events that bracket the Pi harness's context window compaction pass. When the harness detects that the conversation history is approaching the model's context limit, it compacts the history and emits these events so the runtime can write a `CompactionBoundaryRecord` of type `harness_auto_compaction`.
+  </Accordion>
+  <Accordion title="pi_native_event">
+    A pass-through envelope for Pi harness-specific events that do not fit the generic event types. The runtime stores these in the output event log but does not interpret their payloads.
+  </Accordion>
+  <Accordion title="run_completed / run_failed">
+    Terminal events. `run_completed` signals successful execution with a `stop_reason` in its payload. `run_failed` signals that the harness encountered an unrecoverable error. Both cause the runtime to finalize the `TurnResultRecord` and release the session input claim.
+  </Accordion>
+</AccordionGroup>
+
+The `sequence` field on each event is monotonically increasing within a given `input_id`. The runtime uses it to order events correctly in the `OutputEventRecord` table and to detect gaps in the event stream.
+
+## How executors plug into the harness
+
+The harness adapter interface (`RuntimeHarnessAdapter`) is what the harnesses package exposes for each harness implementation. The runtime imports adapters from `HARNESS_DEFINITIONS` and wraps each one in a `RuntimeHarnessPlugin` that adds runtime-specific behaviors like browser tool staging and timeout policy.
+
+A custom executor would implement `RuntimeHarnessAdapter` and register a corresponding `RuntimeHarnessPlugin` in the harness registry. The plugin's `prepareRun` method is where the executor receives the full run context — including the bootstrap payload, runtime config, and staged skills change signal — before the harness host process is launched.
+
+<Warning>
+The harness host process is expected to exit cleanly after emitting `run_completed` or `run_failed`. Processes that hang after a terminal event will be killed by the runtime's timeout mechanism, and the turn result will be marked as failed.
+</Warning>
+
+The agent runtime config for each run is assembled separately from the harness request. The `AgentRuntimeConfigCliRequest` is sent to the harness host via a second CLI invocation that returns the `AgentRuntimeConfigCliResponse` — containing the resolved model ID, assembled system prompt, enabled tool map, and workspace skill IDs — before the main run begins.

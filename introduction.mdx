@@ -1,0 +1,81 @@
+---
+title: "holaOS: The Agent Environment for Long-Horizon Work"
+description: "holaOS gives agents a structured operating system — runtime, memory, tools, and durable state — so they can work continuously and evolve across sessions."
+---
+
+holaOS is an open-source agent environment built for long-horizon work. Where most agent frameworks reset to a blank slate after each run, holaOS gives agents a structured operating system — runtime, workspace model, durable memory, and installable apps — so they stay inspectable, continuable, and self-evolving across sessions instead of executing one-off tasks.
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Install holaOS and launch a local desktop environment in minutes.
+  </Card>
+  <Card title="Learning path" icon="graduation-cap" href="/learning-path">
+    A guided technical path through the architecture after setup.
+  </Card>
+  <Card title="Core concepts" icon="book-open" href="/concepts/environment-engineering">
+    Understand the environment engineering thesis behind holaOS.
+  </Card>
+  <Card title="Build on holaOS" icon="code" href="/build/start-developing">
+    Set up the local desktop and runtime development loop.
+  </Card>
+</CardGroup>
+
+## What problem holaOS solves
+
+Standard agent frameworks hand the model a context window and a set of tools, then discard everything when the run ends. That works for short, self-contained tasks. It breaks down when the work spans hours, days, or multiple sessions — when the agent needs to remember what it learned, resume where it stopped, and improve its own behavior over time.
+
+holaOS is built around a different thesis: the environment, not the model, is what determines whether an agent can do long-horizon work. The runtime, the workspace structure, the memory layer, and the harness boundary are all designed so that agents accumulate state, stay inspectable at every step, and can evolve their own skills.
+
+## Key capabilities
+
+- **Durable memory** — an embedding-backed memory store lets agents capture and recall facts across sessions, so context survives between runs
+- **Workspace model** — a structured filesystem contract separates authored inputs from runtime-owned outputs, giving agents a consistent surface to read and write
+- **Agent harness** — a stable execution boundary sandboxes agent runs and streams events back to the desktop in real time
+- **MCP integration** — native Model Context Protocol support lets agents call tools exposed by any MCP server
+- **Workspace apps** — installable applications with their own lifecycle, ports, and agent-accessible APIs extend what an agent can do
+- **Proactive tasks** — cronjob-driven autonomous runs let agents act on schedules rather than waiting for user input
+- **Self-evolving skills** — agents can propose and persist new skill files that improve their own future behavior
+
+## Project structure
+
+holaOS is a monorepo with three primary layers that work together:
+
+<Note>
+  All three layers run locally during development. The desktop embeds and manages the runtime, so you only need one process to start working.
+</Note>
+
+**Desktop** (`desktop/`) — an Electron application that provides the workspace UI, manages the embedded runtime process, handles authentication, and surfaces agent runs and memory to the operator. Built with React, Vite, and TypeScript.
+
+**Runtime** (`runtime/`) — the TypeScript server that owns all agent execution. It contains three packages:
+
+- `runtime/harness-host` — the agent harness that sandboxes runs and streams events
+- `runtime/state-store` — the SQLite-backed store for workspace state, memory, and continuity artifacts
+- `runtime/api-server` — the HTTP API surface that the desktop and apps talk to
+
+**SDK** (`sdk/`) — two packages for app development:
+
+- `sdk/app-sdk` — the TypeScript library workspace apps use to register with the runtime and expose APIs
+- `sdk/bridge` — a lower-level bridge layer built with Bun
+
+<Info>
+  macOS is fully supported. Windows and Linux support is in progress. The installer handles Node.js provisioning on all three platforms.
+</Info>
+
+## Where to go next
+
+If you are new to holaOS, install it first. The quickstart is the shortest path to a running local environment.
+
+<CardGroup cols={2}>
+  <Card title="Get started" icon="rocket" href="/quickstart">
+    One-line install or manual setup — your choice.
+  </Card>
+  <Card title="Environment engineering" icon="flask" href="/concepts/environment-engineering">
+    The core thesis: why the environment defines the agent system.
+  </Card>
+  <Card title="Workspace model" icon="folder-tree" href="/concepts/workspace-model">
+    The workspace contract, authored surfaces, and runtime-owned state.
+  </Card>
+  <Card title="App development" icon="puzzle-piece" href="/apps/overview">
+    Build workspace apps that extend the agent environment.
+  </Card>
+</CardGroup>

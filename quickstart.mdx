@@ -1,80 +1,209 @@
 ---
-title: "Quickstart"
-description: "Start building awesome documentation in minutes"
+title: "Get started with holaOS"
+description: "Install holaOS and launch a working local desktop environment — from zero to a running Electron app with an embedded runtime in under ten minutes."
 ---
 
-## Get started in three steps
+holaOS ships a one-line installer for fresh machines and a manual path for when you want to control each step yourself. Both paths produce the same result: an Electron desktop app with an embedded runtime, ready for local development.
 
-Get your documentation site running locally and make your first customization.
+## Prerequisites
 
-### Step 1: Set up your local environment
+Before you install, make sure your machine has:
 
-<AccordionGroup>
-  <Accordion icon="copy" title="Clone your docs locally">
-    During the onboarding process, you created a GitHub repository with your docs content if you didn't already have one. You can find a link to this repository in your [dashboard](https://dashboard.mintlify.com).
-    
-    To clone the repository locally so that you can make and preview changes to your docs, follow the [Cloning a repository](https://docs.github.com/en/repositories/creating-and-managing-repositories/cloning-a-repository) guide in the GitHub docs.
-  </Accordion>
-  <Accordion icon="rectangle-terminal" title="Start the preview server">
-    1. Install the Mintlify CLI: `npm i -g mint`
-    2. Navigate to your docs directory and run: `mint dev`
-    3. Open `http://localhost:3000` to see your docs live!
-    
-    <Tip>Your preview updates automatically as you edit files.</Tip>
-  </Accordion>
-</AccordionGroup>
+- `curl`
+- `bash`
+- macOS, Linux, or WSL
 
-### Step 2: Deploy your changes
+<Info>
+  The installer bootstraps `git`, Node.js `24.14.1`, and `npm` automatically if they are missing. On macOS it uses Homebrew for `git`; on Linux it uses the system package manager and may require `sudo`.
+</Info>
 
-<AccordionGroup>
-  <Accordion icon="github" title="Install our GitHub app">
-    Install the Mintlify GitHub app from your [dashboard](https://dashboard.mintlify.com/settings/organization/github-app).
-    
-    Our GitHub app automatically deploys your changes to your docs site, so you don't need to manage deployments yourself.
-</Accordion>
-<Accordion icon="palette" title="Update your site name and colors">
-    For a first change, let's update the name and colors of your docs site.
+## Option 1: One-line install
 
-    1. Open `docs.json` in your editor.
-    2. Change the `"name"` field to your project name.
-    3. Update the `"colors"` to match your brand.
-    4. Save and see your changes instantly at `http://localhost:3000`.
+For a fresh machine, use the repository installer. It provisions everything and, with `--launch`, goes straight into the desktop app:
 
-    <Tip>Try changing the primary color to see an immediate difference!</Tip>
-  </Accordion>
-</AccordionGroup>
+```bash
+curl -fsSL https://raw.githubusercontent.com/holaboss-ai/holaboss-ai/main/scripts/install.sh | bash -s -- --launch
+```
 
-### Step 3: Go live
+The installer runs through these steps automatically:
 
-<Accordion icon="rocket" title="Publish your docs">
-  1. Commit and push your changes.
-  2. Your docs will update and be live in moments!
-</Accordion>
+1. Installs `git` if missing
+2. Installs Node.js `24.14.1` and `npm` if missing
+3. Clones the repository into `~/holaboss-ai`
+4. Creates `desktop/.env` from `desktop/.env.example` if it does not exist
+5. Runs `npm run desktop:install`
+6. Runs `npm run desktop:prepare-runtime:local`
+7. Runs `npm run desktop:typecheck`
+8. Runs `npm run desktop:dev` (only when you pass `--launch`)
 
-## Next steps
+**Optional installer flags:**
 
-Now that you have your docs running, explore these key features:
+| Flag | Description |
+|------|-------------|
+| `--launch` | Continue into `npm run desktop:dev` after verification |
+| `--dir <path>` | Choose a different checkout directory instead of `~/holaboss-ai` |
+| `--ref <git-ref>` | Install from a specific branch or tag instead of `main` |
+| `--branch <git-ref>` | Alias for `--ref` |
+
+## Option 2: Manual install
+
+Use the manual path when you want to inspect or control each setup step. All commands run from the repository root.
+
+<Steps>
+  <Step title="Verify prerequisites">
+    Confirm `git`, `node`, and `npm` are available:
+
+    ```bash
+    git --version
+    node --version
+    npm --version
+    ```
+
+    Node.js must be version `22` or newer. If `node --version` reports a lower major version, upgrade before continuing.
+  </Step>
+
+  <Step title="Clone the repository">
+    ```bash
+    git clone https://github.com/holaboss-ai/holaboss-ai.git
+    cd holaboss-ai
+    ```
+
+    If you already have a local checkout, enter the repository root instead of cloning again.
+  </Step>
+
+  <Step title="Install desktop dependencies">
+    ```bash
+    npm run desktop:install
+    ```
+
+    This installs the Electron desktop dependencies under `desktop/` using the root workspace script.
+  </Step>
+
+  <Step title="Create the environment file">
+    ```bash
+    cp desktop/.env.example desktop/.env
+    ```
+
+    The example file already contains working defaults. Only change values that your model provider or machine requires.
+
+    <Tip>
+      Keep your `.env` close to the template unless a specific value needs overriding. The defaults connect to the Holaboss backend and auth service.
+    </Tip>
+  </Step>
+
+  <Step title="Stage the local runtime bundle">
+    ```bash
+    npm run desktop:prepare-runtime:local
+    ```
+
+    This builds the runtime from your local source checkout and stages it into `desktop/out/runtime-<platform>`. Use this command whenever you are actively changing runtime code.
+
+    <Note>
+      If you want to use the latest published runtime bundle instead of building from source, run `npm run desktop:prepare-runtime` instead.
+    </Note>
+  </Step>
+
+  <Step title="Verify the setup">
+    Run the type check before launching Electron:
+
+    ```bash
+    npm run desktop:typecheck
+    ```
+
+    If this step fails, stop and resolve the errors before continuing. Do not skip verification.
+  </Step>
+
+  <Step title="Launch the desktop app">
+    ```bash
+    npm run desktop:dev
+    ```
+
+    This starts the Vite renderer dev server, the Electron main/preload watcher, and the Electron app concurrently. The `predev` hook validates the environment, rebuilds native modules, and checks for a staged runtime bundle before Electron opens.
+
+    <Warning>
+      `npm run desktop:dev` is an interactive long-running process. It requires a display environment to open an Electron window. In headless or GUI-less environments, stop after the typecheck step and report that installation succeeded.
+    </Warning>
+  </Step>
+</Steps>
+
+## Minimal command sequence
+
+If you want the equivalent of the one-line installer as explicit commands:
+
+```bash
+git clone https://github.com/holaboss-ai/holaboss-ai.git
+cd holaboss-ai
+npm run desktop:install
+cp desktop/.env.example desktop/.env
+npm run desktop:prepare-runtime:local
+npm run desktop:typecheck
+npm run desktop:dev
+```
+
+## Available npm scripts
+
+The root `package.json` exposes scripts for every part of the system. Here are the most commonly used ones:
+
+**Desktop:**
+
+| Script | Description |
+|--------|-------------|
+| `npm run desktop:install` | Install Electron desktop dependencies |
+| `npm run desktop:dev` | Start the desktop app in development mode |
+| `npm run desktop:typecheck` | Run TypeScript type checking on the desktop |
+| `npm run desktop:prepare-runtime:local` | Build and stage the runtime from local source |
+| `npm run desktop:prepare-runtime` | Fetch and stage the latest published runtime bundle |
+
+**Runtime validation:**
+
+| Script | Description |
+|--------|-------------|
+| `npm run runtime:state-store:install` | Install state-store dependencies |
+| `npm run runtime:state-store:build` | Build the state-store package |
+| `npm run runtime:harness-host:install` | Install harness-host dependencies |
+| `npm run runtime:harness-host:build` | Build the harness-host package |
+| `npm run runtime:api-server:install` | Install api-server dependencies |
+| `npm run runtime:test` | Run all runtime test suites |
+
+**SDK:**
+
+| Script | Description |
+|--------|-------------|
+| `npm run sdk:app-sdk:install` | Install app SDK dependencies |
+| `npm run sdk:app-sdk:build` | Build the app SDK |
+| `npm run sdk:bridge:install` | Install bridge SDK dependencies |
+| `npm run sdk:bridge:build` | Build the bridge SDK |
+
+**Docs:**
+
+| Script | Description |
+|--------|-------------|
+| `npm run docs:dev` | Start the docs dev server |
+| `npm run docs:build` | Build the docs site |
+
+## Using a coding agent to install
+
+If you use Codex, Claude Code, Cursor, Windsurf, or another coding agent, you can hand it the setup instructions directly:
+
+```text
+Run the Holaboss install script from https://raw.githubusercontent.com/holaboss-ai/holaboss-ai/main/scripts/install.sh. It should install git and Node.js 22/npm if they are missing, clone or update the repo into ~/holaboss-ai unless I specify another --dir, run desktop:install, create desktop/.env from desktop/.env.example if needed, run desktop:prepare-runtime:local and desktop:typecheck, and only run desktop:dev if I ask for --launch. If Electron cannot open, stop after verification and tell me the next manual step.
+```
+
+## What to do next
+
+Once the desktop is running, continue with the learning path to understand the architecture before building on it.
 
 <CardGroup cols={2}>
-
-<Card title="Write Content" icon="pen-to-square" href="/essentials/markdown">
-  Learn MDX syntax and start writing your documentation.
-</Card>
-
-<Card title="Customize style" icon="palette" href="/essentials/settings">
-  Make your docs match your brand perfectly.
-</Card>
-
-<Card title="Add code examples" icon="square-code" href="/essentials/code">
-  Include syntax-highlighted code blocks.
-</Card>
-
-<Card title="API documentation" icon="code" href="/api-reference/introduction">
-  Auto-generate API docs from OpenAPI specs.
-</Card>
-
+  <Card title="Learning path" icon="graduation-cap" href="/learning-path">
+    A guided technical path through the architecture after setup.
+  </Card>
+  <Card title="Core concepts" icon="book-open" href="/concepts/environment-engineering">
+    Start with the environment engineering thesis.
+  </Card>
+  <Card title="Build on holaOS" icon="code" href="/build/start-developing">
+    Set up the full local desktop and runtime development loop.
+  </Card>
+  <Card title="App development" icon="puzzle-piece" href="/apps/overview">
+    Build workspace apps that extend the agent environment.
+  </Card>
 </CardGroup>
-
-<Note>
-  **Need help?** See our [full documentation](https://mintlify.com/docs) or join our [community](https://mintlify.com/community).
-</Note>

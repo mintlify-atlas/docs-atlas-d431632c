@@ -1,0 +1,160 @@
+---
+title: "Configure AI models and providers in holaOS"
+description: "Set the default model, configure the model proxy provider, and understand how runtime-config.json and environment variables drive model selection."
+---
+
+Model configuration in holaOS is split across two layers: environment variables that apply at runtime startup, and a `runtime-config.json` file that the runtime reads and writes through the config API. The desktop settings UI maps directly to the same config file. Understanding both layers makes it straightforward to configure any provider.
+
+## How model configuration is resolved
+
+The runtime resolves model configuration by merging three sources in priority order:
+
+1. **`runtime-config.json`** — the file at `$HB_SANDBOX_ROOT/state/runtime-config.json` (default `/holaboss/state/runtime-config.json`)
+2. **Environment variables** — read at startup, used as fallbacks when the config file value is absent
+3. **Compiled defaults** — `openai/gpt-5.4` for the model, `oss` for the runtime mode
+
+The config file path can be overridden with the `HOLABOSS_RUNTIME_CONFIG_PATH` environment variable.
+
+## Environment variables
+
+These environment variables are read by `runtime/api-server/src/runtime-config.ts`:
+
+| Variable | Purpose | Default |
+|---|---|---|
+| `HOLABOSS_MODEL_PROXY_BASE_URL` | Base URL for the model proxy provider | — |
+| `HOLABOSS_MODEL_PROXY_BASE_URL_DEFAULT` | Fallback base URL (used when `includeDefault` is set) | — |
+| `HOLABOSS_DEFAULT_MODEL` | Default model identifier in `provider/model` format | `openai/gpt-5.4` |
+| `HOLABOSS_SANDBOX_AUTH_TOKEN` | Auth token for the Holaboss integration | — |
+| `HOLABOSS_USER_ID` | User ID for the Holaboss integration | — |
+| `HOLABOSS_RUNTIME_CONFIG_PATH` | Override path for `runtime-config.json` | `$HB_SANDBOX_ROOT/state/runtime-config.json` |
+| `HB_SANDBOX_ROOT` | Root directory for sandbox state | `/holaboss` |
+| `SANDBOX_AGENT_HARNESS` | Agent harness selector | — |
+
+<Note>
+  Environment variables act as fallbacks. A value present in `runtime-config.json` always takes precedence over the corresponding environment variable.
+</Note>
+
+## The runtime-config.json structure
+
+The config file is a JSON document with four top-level sections:
+
+```json
+{
+  "runtime": {
+    "mode": "oss",
+    "default_model": "openai/gpt-4o",
+    "default_provider": "holaboss_model_proxy",
+    "sandbox_id": ""
+  },
+  "providers": {
+    "holaboss_model_proxy": {
+      "kind": "openai_compatible",
+      "base_url": "https://your-proxy-endpoint.example.com",
+      "api_key": "your-auth-token"
+    }
+  },
+  "integrations": {
+    "holaboss": {
+      "enabled": true,
+      "auth_token": "your-auth-token",
+      "user_id": "your-user-id",
+      "sandbox_id": ""
+    }
+  },
+  "capabilities": {
+    "desktop_browser": {
+      "enabled": false,
+      "url": ""
+    }
+  }
+}
+```
+
+### Key config fields
+
+| Section | Field | Description |
+|---|---|---|
+| `runtime` | `default_model` | Model identifier used when a session does not specify a model |
+| `runtime` | `default_provider` | Provider key to use by default (e.g. `holaboss_model_proxy`) |
+| `runtime` | `mode` | Runtime mode: `oss` (default) or `product` (Holaboss-enabled) |
+| `providers.holaboss_model_proxy` | `base_url` | Base URL for the OpenAI-compatible proxy |
+| `providers.holaboss_model_proxy` | `api_key` | API key sent with model requests |
+| `integrations.holaboss` | `enabled` | Whether Holaboss cloud integration is active |
+| `integrations.holaboss` | `auth_token` | Auth token for the Holaboss backend |
+| `capabilities.desktop_browser` | `enabled` | Whether the desktop browser capability is active |
+
+## The holaboss_model_proxy provider
+
+The `holaboss_model_proxy` provider is a first-class provider concept in the runtime. It is an OpenAI-compatible HTTP endpoint: the runtime sends requests to `base_url` with `api_key` in the `Authorization` header (or `X-API-Key`), using the OpenAI request shape.
+
+To point the runtime at a custom OpenAI-compatible endpoint:
+
+```json
+{
+  "providers": {
+    "holaboss_model_proxy": {
+      "kind": "openai_compatible",
+      "base_url": "https://api.example.com/v1",
+      "api_key": "sk-..."
+    }
+  },
+  "runtime": {
+    "default_provider": "holaboss_model_proxy",
+    "default_model": "openai/gpt-4o"
+  }
+}
+```
+
+## Configuring via the runtime config API
+
+The config file can be read and updated through the runtime API without restarting the server:
+
+```bash
+# Read current config
+curl http://localhost:3060/api/v1/runtime/config
+
+# Update the default model
+curl -X PUT http://localhost:3060/api/v1/runtime/config \
+  -H "Content-Type: application/json" \
+  -d '{"default_model": "openai/gpt-4o", "model_proxy_base_url": "https://..."}'
+```
+
+The `PUT /api/v1/runtime/config` endpoint accepts a flat payload. The runtime merges the values into the correct sections of `runtime-config.json` automatically.
+
+## Runtime mode
+
+The `runtime_mode` field controls which integration is active:
+
+| Mode | Description |
+|---|---|
+| `oss` | Open-source mode — no Holaboss cloud integration |
+| `product` | Product mode — Holaboss cloud integration enabled; set automatically when `auth_token` or `model_proxy_base_url` is present |
+
+## Desktop settings UI
+
+The desktop settings dialog writes to the same `runtime-config.json` file through the runtime config API. Changes made in settings take effect immediately without restarting the desktop app or the runtime process.
+
+The `SubmissionsPanel` component (`desktop/src/components/settings/SubmissionsPanel.tsx`) is an example of a settings surface that communicates back to the Holaboss backend for marketplace template submission state.
+
+## Config response shape
+
+`GET /api/v1/runtime/config` returns:
+
+```json
+{
+  "config_path": "/holaboss/state/runtime-config.json",
+  "loaded_from_file": true,
+  "auth_token_present": false,
+  "user_id": null,
+  "sandbox_id": null,
+  "model_proxy_base_url": "https://...",
+  "default_model": "openai/gpt-4o",
+  "runtime_mode": "oss",
+  "default_provider": "holaboss_model_proxy",
+  "holaboss_enabled": false,
+  "desktop_browser_enabled": false,
+  "desktop_browser_url": null
+}
+```
+
+`auth_token_present` is a boolean — the actual token value is never returned.

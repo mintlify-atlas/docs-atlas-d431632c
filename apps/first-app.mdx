@@ -1,0 +1,265 @@
+---
+title: "Build your first holaOS workspace app"
+description: "A step-by-step guide to creating, registering, and running a workspace app — including the directory layout, manifest format, and bridge SDK."
+---
+
+This guide walks you through building a minimal holaOS workspace app from scratch. By the end you will have a working Node.js server registered in `workspace.yaml`, reachable on an assigned port, and visible to the agent runtime.
+
+<Steps>
+
+<Step title="Create the app directory">
+
+Every app lives under `apps/{appId}/` inside the workspace root. Create the directory for your app:
+
+```bash
+mkdir -p apps/my-app
+cd apps/my-app
+npm init -y
+```
+
+The workspace root layout looks like this:
+
+```
+workspace/
+├── workspace.yaml
+└── apps/
+    └── my-app/
+        ├── app.runtime.yaml   ← required manifest
+        ├── package.json
+        └── src/
+            └── server.ts
+```
+
+<Note>
+  The `app_id` must be unique within the workspace and must not contain path separators or special characters. The runtime uses it as both the directory name and the MCP server identifier.
+</Note>
+
+</Step>
+
+<Step title="Write app.runtime.yaml">
+
+Every app needs an `app.runtime.yaml` at the root of its directory. This file declares the app's identity, lifecycle commands, MCP surface, and health check configuration.
+
+```yaml
+app_id: my-app
+
+lifecycle:
+  setup: npm install && npm run build
+  start: node dist/server.js
+  stop: ""
+
+mcp:
+  transport: http-sse
+  port: 13100     # container-side MCP port — the runtime remaps this to the assigned mcp port
+  path: /mcp
+  tools:
+    - search
+    - create_record
+
+healthchecks:
+  mcp:
+    path: /health
+    timeout_s: 60
+    interval_s: 5
+
+env_contract:
+  - HOLABOSS_USER_ID
+  - HOLABOSS_WORKSPACE_ID
+```
+
+The `lifecycle.setup` command is a one-time build step — it runs `npm install` and compiles your TypeScript. The `lifecycle.start` command is the long-running process; the runtime keeps it alive and restarts it if it dies.
+
+The `env_contract` list tells the runtime which environment variables to forward into your process. `PORT` and `MCP_PORT` are always injected automatically.
+
+</Step>
+
+<Step title="Read assigned ports at runtime">
+
+The runtime injects `PORT` and `MCP_PORT` into your process environment before starting it. Read them at startup:
+
+```typescript
+// src/server.ts
+const PORT = parseInt(process.env.PORT ?? "18080", 10);
+const MCP_PORT = parseInt(process.env.MCP_PORT ?? "13100", 10);
+```
+
+Port assignment is deterministic and based on the app's index in `workspace.yaml`:
+
+```typescript
+// From runtime/api-server/src/workspace-apps.ts
+const APP_HTTP_PORT_BASE = 18080;
+const APP_MCP_PORT_BASE = 13100;
+
+export function portsForAppIndex(index: number): { http: number; mcp: number } {
+  return {
+    http: APP_HTTP_PORT_BASE + index,
+    mcp: APP_MCP_PORT_BASE + index
+  };
+}
+```
+
+The first app in `workspace.yaml` gets `http: 18080, mcp: 13100`. The second gets `18081, 13101`, and so on.
+
+</Step>
+
+<Step title="Register the app in workspace.yaml">
+
+Add your app to the `applications` array in `workspace.yaml` at the workspace root:
+
+```yaml
+applications:
+  - app_id: my-app
+    config_path: apps/my-app/app.runtime.yaml
+    lifecycle:
+      setup: npm install && npm run build
+      start: node dist/server.js
+```
+
+The `config_path` is relative to the workspace root. The runtime reads it to resolve the full `app.runtime.yaml` at startup and before each lifecycle operation.
+
+</Step>
+
+<Step title="Use the bridge SDK">
+
+The `@holaboss/bridge` package lets your app communicate back to the holaOS runtime — publishing outputs, recording session artifacts, and calling provider integrations through the broker proxy.
+
+Install it:
+
+```bash
+npm install @holaboss/bridge
+```
+
+The full public API exported from `sdk/bridge/src/index.ts`:
+
+```typescript
+export { createIntegrationClient } from "./integration-proxy"
+export { buildAppResourcePresentation } from "./presentation"
+export { resolveHolabossTurnContext } from "./turn-context"
+export {
+  createAppOutput,
+  publishSessionArtifact,
+  updateAppOutput,
+} from "./workspace-outputs"
+
+export type {
+  AppOutputPresentationInput,
+  CreateAppOutputRequest,
+  HolabossTurnContext,
+  IntegrationClient,
+  ProxyRequest,
+  ProxyResponse,
+  PublishSessionArtifactRequest,
+  SessionArtifactPayload,
+  UpdateAppOutputRequest,
+  WorkspaceOutputPayload,
+} from "./types"
+```
+
+**Publishing a workspace output** — creates a record visible in the holaOS UI:
+
+```typescript
+import { createAppOutput } from "@holaboss/bridge";
+
+const output = await createAppOutput({
+  outputType: "report",
+  title: "Q1 Sales Report",
+  moduleId: "my-app",
+  moduleResourceId: "report-2026-q1",
+  status: "ready",
+  metadata: { rows: 450 },
+});
+// Returns null when running outside a workspace context (local dev)
+```
+
+**Publishing a session artifact** — scoped to the active agent turn:
+
+```typescript
+import { resolveHolabossTurnContext, publishSessionArtifact } from "@holaboss/bridge";
+
+// In an MCP tool handler — headers come from the inbound MCP request
+const ctx = resolveHolabossTurnContext(request.headers);
+if (ctx) {
+  await publishSessionArtifact(ctx, {
+    artifactType: "csv_export",
+    externalId: "file-abc123",
+    title: "contacts_export.csv",
+    moduleId: "my-app",
+  });
+}
+```
+
+`resolveHolabossTurnContext` reads the `x-holaboss-workspace-id`, `x-holaboss-session-id`, and `x-holaboss-input-id` headers that the agent harness injects into every MCP tool call. It returns `null` when those headers are absent, which is the expected behavior during local development.
+
+**Calling a provider integration** — proxies the request through the Holaboss broker rather than calling the provider directly:
+
+```typescript
+import { createIntegrationClient } from "@holaboss/bridge";
+
+const github = createIntegrationClient("github");
+const { data } = await github.proxy<{ login: string }>({
+  method: "GET",
+  endpoint: "/user",
+});
+```
+
+</Step>
+
+<Step title="Run the lifecycle setup">
+
+Once your app is registered, the runtime runs `lifecycle.setup` the first time it starts the app (or when explicitly triggered). The setup command runs with `cwd` set to the app directory and has access to `PORT`, `MCP_PORT`, and any variables listed in `env_contract`.
+
+Setup logs are written to:
+
+```
+apps/my-app/.holaboss/logs/setup-<timestamp>.log
+apps/my-app/.holaboss/logs/setup.latest.log   ← always the most recent run
+```
+
+If setup fails (non-zero exit code), the app transitions to the `failed` state. Check `setup.latest.log` to debug.
+
+<Tip>
+  To re-run setup without reinstalling, stop the app and start it again without the `skipSetup` flag. The runtime will re-execute `lifecycle.setup` automatically.
+</Tip>
+
+</Step>
+
+</Steps>
+
+## Complete app.runtime.yaml reference
+
+```yaml
+app_id: my-app                    # must match the declared app_id in workspace.yaml
+
+lifecycle:
+  setup: npm install && npm run build   # one-time build step
+  start: node dist/server.js            # long-running server
+  stop: ""                              # optional graceful stop command
+
+mcp:
+  transport: http-sse             # currently the only supported transport
+  port: 13100                     # container-side port; runtime remaps to assigned mcp port
+  path: /mcp                      # MCP endpoint path
+  tools:
+    - tool_name_a
+    - tool_name_b
+
+healthchecks:
+  mcp:
+    path: /health
+    timeout_s: 60
+    interval_s: 5
+
+env_contract:
+  - HOLABOSS_USER_ID
+  - HOLABOSS_WORKSPACE_ID
+
+# Optional: declare integration requirements
+integrations:
+  - provider: github
+    scopes: [read:user, repo]
+```
+
+## What's next
+
+- [Workspace skills](/apps/workspace-skills) — add markdown skill files to guide agent behavior
+- [MCP integration](/apps/mcp-integration) — expose tools to agents via the Model Context Protocol

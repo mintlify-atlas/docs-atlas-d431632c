@@ -1,0 +1,206 @@
+---
+title: "Runtime configuration file reference"
+description: "Schema, field descriptions, and API endpoints for the runtime-config.json file that controls model proxy, auth, and capability settings in holaOS."
+---
+
+The holaOS runtime API server reads its configuration from a JSON file on disk called `runtime-config.json`. This file is the source of truth for auth tokens, model proxy settings, and capability flags. The runtime watches for changes and applies them without a restart.
+
+## File location
+
+The default path is:
+
+```
+{HB_SANDBOX_ROOT}/state/runtime-config.json
+```
+
+where `HB_SANDBOX_ROOT` defaults to `/holaboss`. You can override the path by setting the `HOLABOSS_RUNTIME_CONFIG_PATH` environment variable.
+
+<Tip>
+  The directory is created automatically the first time a `PUT /api/v1/runtime/config` request is processed, so you do not need to create it manually.
+</Tip>
+
+## File structure
+
+The file is a JSON object. The runtime supports a modern nested layout and a flat legacy layout (under a `holaboss` key). Use the nested layout for new deployments:
+
+```json
+{
+  "runtime": {
+    "mode": "product",
+    "default_model": "openai/gpt-5.4",
+    "default_provider": "holaboss_model_proxy",
+    "sandbox_id": "sandbox-abc123"
+  },
+  "providers": {
+    "holaboss_model_proxy": {
+      "kind": "openai_compatible",
+      "api_key": "<auth-token>",
+      "base_url": "https://proxy.holaboss.ai"
+    }
+  },
+  "integrations": {
+    "holaboss": {
+      "enabled": true,
+      "auth_token": "<auth-token>",
+      "user_id": "<user-id>",
+      "sandbox_id": "sandbox-abc123"
+    }
+  },
+  "capabilities": {
+    "desktop_browser": {
+      "enabled": false,
+      "url": "",
+      "auth_token": ""
+    }
+  }
+}
+```
+
+---
+
+## `ProductRuntimeConfig` type
+
+The TypeScript type that the runtime resolves from the file plus environment variables:
+
+```typescript
+type ProductRuntimeConfig = {
+  authToken: string;
+  userId: string;
+  sandboxId: string;
+  modelProxyBaseUrl: string;
+  defaultModel: string;
+  runtimeMode: string;
+  defaultProvider: string;
+  holabossEnabled: boolean;
+  desktopBrowserEnabled: boolean;
+  desktopBrowserUrl: string;
+  desktopBrowserAuthToken: string;
+  configPath: string;
+  loadedFromFile: boolean;
+};
+```
+
+---
+
+## Field reference
+
+<ParamField body="authToken" type="string">
+  Bearer / API-key token used to authenticate requests to the Holaboss backend. Read from `integrations.holaboss.auth_token` or `providers.holaboss_model_proxy.api_key`. Can also be set via the `HOLABOSS_SANDBOX_AUTH_TOKEN` environment variable.
+</ParamField>
+
+<ParamField body="userId" type="string">
+  Holaboss user ID. Read from `integrations.holaboss.user_id`. Can also be set via `HOLABOSS_USER_ID`.
+</ParamField>
+
+<ParamField body="sandboxId" type="string">
+  Sandbox instance ID. Read from `integrations.holaboss.sandbox_id` or `runtime.sandbox_id`. Present only when an auth token has been configured.
+</ParamField>
+
+<ParamField body="modelProxyBaseUrl" type="string">
+  Base URL of the OpenAI-compatible model proxy. Read from `providers.holaboss_model_proxy.base_url`. Can also be set via `HOLABOSS_MODEL_PROXY_BASE_URL`. Must be an absolute `http(s)` URL with no query string.
+</ParamField>
+
+<ParamField body="defaultModel" type="string">
+  Default model identifier passed to the harness. Read from `runtime.default_model`. Falls back to `HOLABOSS_DEFAULT_MODEL`, then `openai/gpt-5.4`.
+</ParamField>
+
+<ParamField body="runtimeMode" type="string">
+  Operating mode. Derived from `runtime.mode`. Automatically set to `"product"` when `holabossEnabled` is `true`, otherwise defaults to `"oss"`.
+</ParamField>
+
+<ParamField body="defaultProvider" type="string">
+  Default provider ID used by the harness (e.g. `"holaboss_model_proxy"`). Read from `runtime.default_provider`.
+</ParamField>
+
+<ParamField body="holabossEnabled" type="boolean">
+  Whether Holaboss cloud features are enabled. Derived from `integrations.holaboss.enabled`; automatically inferred as `true` when an `authToken`, `userId`, `modelProxyBaseUrl`, or `defaultProvider` is configured.
+</ParamField>
+
+<ParamField body="desktopBrowserEnabled" type="boolean">
+  Whether the desktop browser capability is active. Derived from `capabilities.desktop_browser.enabled`.
+
+  **Default:** `false`
+</ParamField>
+
+<ParamField body="desktopBrowserUrl" type="string">
+  MCP URL of the desktop browser service. Read from `capabilities.desktop_browser.url` (or the legacy `mcp_url` key).
+</ParamField>
+
+<ParamField body="desktopBrowserAuthToken" type="string">
+  Auth token for the desktop browser service. Read from `capabilities.desktop_browser.auth_token`.
+</ParamField>
+
+<ParamField body="configPath" type="string">
+  Resolved filesystem path of the config file that was read (informational).
+</ParamField>
+
+<ParamField body="loadedFromFile" type="boolean">
+  `true` if the config was read from a file on disk; `false` if the file did not exist and defaults were used.
+</ParamField>
+
+---
+
+## API endpoints
+
+The runtime API server exposes two endpoints for reading and updating the configuration at runtime.
+
+### `GET /api/v1/runtime/config`
+
+Returns the current resolved configuration as a JSON object.
+
+```bash
+curl http://localhost:3060/api/v1/runtime/config
+```
+
+**Response shape:**
+
+```json
+{
+  "config_path": "/holaboss/state/runtime-config.json",
+  "loaded_from_file": true,
+  "auth_token_present": true,
+  "user_id": "usr-abc123",
+  "sandbox_id": "sandbox-abc123",
+  "model_proxy_base_url": "https://proxy.holaboss.ai",
+  "default_model": "openai/gpt-5.4",
+  "runtime_mode": "product",
+  "default_provider": "holaboss_model_proxy",
+  "holaboss_enabled": true,
+  "desktop_browser_enabled": false,
+  "desktop_browser_url": null
+}
+```
+
+<Note>
+  `auth_token_present` is a boolean rather than the raw token value — the token itself is never returned by the API.
+</Note>
+
+### `PUT /api/v1/runtime/config`
+
+Merges the supplied fields into the config file and returns the updated resolved configuration. Fields set to `null` or an empty string are removed from the file.
+
+```bash
+curl -X PUT http://localhost:3060/api/v1/runtime/config \
+  -H "Content-Type: application/json" \
+  -d '{
+    "auth_token": "<your-token>",
+    "model_proxy_base_url": "https://proxy.holaboss.ai",
+    "default_model": "openai/gpt-5.4"
+  }'
+```
+
+**Writable fields:**
+
+| Field | Type | Description |
+|---|---|---|
+| `auth_token` | `string` | Sets `integrations.holaboss.auth_token` and `providers.holaboss_model_proxy.api_key` |
+| `user_id` | `string` | Sets `integrations.holaboss.user_id` |
+| `sandbox_id` | `string` | Sets `integrations.holaboss.sandbox_id` and `runtime.sandbox_id` |
+| `model_proxy_base_url` | `string` | Sets `providers.holaboss_model_proxy.base_url` |
+| `default_model` | `string` | Sets `runtime.default_model` |
+| `runtime_mode` | `string` | Sets `runtime.mode` |
+| `default_provider` | `string` | Sets `runtime.default_provider` |
+| `holaboss_enabled` | `boolean` | Sets `integrations.holaboss.enabled` |
+| `desktop_browser_url` | `string` | Sets `capabilities.desktop_browser.url` |
+| `desktop_browser_auth_token` | `string` | Sets `capabilities.desktop_browser.auth_token` |
+| `desktop_browser_enabled` | `boolean` | Sets `capabilities.desktop_browser.enabled` |

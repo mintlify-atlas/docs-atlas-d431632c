@@ -1,0 +1,235 @@
+---
+title: "Memory and continuity across agent sessions"
+description: "How holaOS persists agent knowledge across sessions using scoped memory entries, embedding-backed recall, and compaction boundary artifacts."
+---
+
+Agent sessions end. Memory does not have to. holaOS separates what an agent can hold in its context window from what it can recall across sessions. Memory entries are written after each turn by the evolve pipeline, scoped to where they belong, and recalled at the start of the next run. Compaction boundaries preserve the shape of prior turns when the full turn history no longer fits in context. Together, these mechanisms let an agent resume long-horizon work without losing what it learned.
+
+## Memory entry types and scopes
+
+Memory in holaOS is not a flat log of conversation history. It is a typed, scoped record of observations the agent has made and the runtime has verified worth keeping.
+
+The state store defines two orthogonal axes for every memory entry: its **scope** (where it belongs) and its **type** (what kind of information it is).
+
+```typescript
+// from state-store/src/store.ts
+export type MemoryEntryScope = "workspace" | "session" | "user" | "ephemeral";
+export type MemoryEntryType = "preference" | "identity" | "fact" | "procedure" | "blocker" | "reference";
+```
+
+**Scope** controls whose memory this is and how long it lives:
+
+| Scope | What it means |
+|---|---|
+| `workspace` | Specific to this workspace — workflow facts, project context, workspace-specific preferences |
+| `user` | Belongs to the user regardless of workspace — cross-workspace preferences and behaviors |
+| `session` | Scoped to a single session — short-lived observations not worth persisting long-term |
+| `ephemeral` | Scratch memory that is not persisted across restarts |
+
+**Type** controls what category of knowledge the entry represents:
+
+| Type | Examples |
+|---|---|
+| `preference` | "User prefers concise responses", "Always use TypeScript, not JavaScript" |
+| `identity` | "User's name is Alex", "User is a senior backend engineer" |
+| `fact` | "The project uses PostgreSQL 16", "API rate limit is 1000 req/hour" |
+| `procedure` | "To deploy: run npm run build then push to main" |
+| `blocker` | "Integration X is broken until the team fixes the auth issue" |
+| `reference` | External links, document paths, tool names the agent should know |
+
+## The full memory entry record
+
+Each entry carries metadata that controls how the runtime uses and validates it:
+
+```typescript
+// from state-store/src/store.ts
+export interface MemoryEntryRecord {
+  memoryId: string;
+  workspaceId: string | null;
+  sessionId: string | null;
+  scope: MemoryEntryScope;
+  memoryType: MemoryEntryType;
+  subjectKey: string;
+  path: string;
+  title: string;
+  summary: string;
+  tags: string[];
+  verificationPolicy: MemoryVerificationPolicy;
+  stalenessPolicy: MemoryStalenessPolicy;
+  staleAfterSeconds: number | null;
+  sourceTurnInputId: string | null;
+  sourceMessageId: string | null;
+  sourceType: MemoryEntrySourceType | null;
+  observedAt: string | null;
+  lastVerifiedAt: string | null;
+  confidence: number | null;
+  fingerprint: string;
+  status: string;
+  supersededAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+```
+
+The `verificationPolicy` and `stalenessPolicy` fields control how the runtime treats entries over time:
+
+```typescript
+export type MemoryVerificationPolicy = "none" | "check_before_use" | "must_reconfirm";
+export type MemoryStalenessPolicy = "stable" | "time_sensitive" | "workspace_sensitive";
+```
+
+An entry with `verificationPolicy: "must_reconfirm"` will be surfaced to the agent for re-verification before use. An entry with `stalenessPolicy: "time_sensitive"` paired with `staleAfterSeconds` will be treated as expired after that window. This prevents stale facts from silently polluting the agent's context.
+
+## The filesystem memory store
+
+For the built-in memory backend, entries are written as Markdown files on the filesystem under the workspace's `memory/` directory. The memory service enforces strict path constraints:
+
+```typescript
+// from memory.ts — allowed paths
+// MEMORY.md
+// workspace/<workspace_id>/*
+// preference/*
+// identity/*
+```
+
+This maps directly to the three memory scope buckets used for the embedding index:
+
+```typescript
+// from state-store/src/store.ts
+export type MemoryEmbeddingScopeBucket = "workspace" | "preference" | "identity";
+```
+
+The root `MEMORY.md` file serves as a global entrypoint. Workspace-scoped entries live under `workspace/<workspace-id>/`. Cross-workspace user preferences live under `preference/`. Identity observations live under `identity/`.
+
+<Note>
+The memory service's path enforcement prevents the agent from writing memory outside its allowed scope. Absolute paths and parent path traversals (`..`) are rejected at the service boundary before they touch the filesystem.
+</Note>
+
+## Semantic search and the embedding index
+
+When the state store is opened with `sqlite-vec` vector extension support, holaOS maintains an embedding index alongside the memory entry records. The index allows semantic search across memory entries rather than keyword-only lookup.
+
+```typescript
+// from state-store/src/store.ts
+export interface MemoryEmbeddingIndexRecord {
+  vecRowid: number;
+  memoryId: string;
+  path: string;
+  workspaceId: string | null;
+  scopeBucket: MemoryEmbeddingScopeBucket;
+  memoryType: string;
+  contentFingerprint: string;
+  embeddingModel: string;
+  embeddingDim: number;
+  indexedAt: string;
+  updatedAt: string;
+}
+
+export interface MemoryVectorSearchResult {
+  vecRowid: number;
+  distance: number;
+  memoryId: string;
+  path: string;
+  workspaceId: string | null;
+  scopeBucket: MemoryEmbeddingScopeBucket;
+  memoryType: string;
+}
+```
+
+The `contentFingerprint` field on `MemoryEmbeddingIndexRecord` tracks whether the embedding is stale relative to the current entry content. When the entry is updated, the fingerprint changes and the embedding is re-indexed on the next recall pass.
+
+For deployments without vector index support, the filesystem memory service falls back to token-based text scoring across the raw Markdown files.
+
+## Continuity artifacts: compaction boundaries
+
+When a session runs for a long time, the full turn history exceeds the model's context window. holaOS handles this through compaction boundaries — structured snapshots that capture the shape of prior turns in a compact form the model can restore from.
+
+```typescript
+// from state-store/src/store.ts
+export interface CompactionBoundaryRecord {
+  boundaryId: string;
+  workspaceId: string;
+  sessionId: string;
+  inputId: string;
+  boundaryType: CompactionBoundaryType; // "executor_post_turn" | "harness_auto_compaction"
+  previousBoundaryId: string | null;
+  summary: string | null;
+  recentRuntimeContext: Record<string, unknown> | null;
+  restorationContext: Record<string, unknown> | null;
+  preservedTurnInputIds: string[];
+  requestSnapshotFingerprint: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+```
+
+Compaction boundaries come in two types:
+- `executor_post_turn`: written by the runtime after a turn completes as a proactive snapshot
+- `harness_auto_compaction`: triggered by the Pi harness when the context window pressure crosses a threshold
+
+The `restorationContext` object carries a structured restoration order that tells the harness which context pieces to load and in what sequence when the session resumes after compaction:
+
+```typescript
+// from turn-result-summary.ts
+export interface AgentCompactionRestorationContext {
+  compaction_source: string;
+  boundary_type: string;
+  restoration_order: string[];
+  boundary_summary?: string | null;
+  recent_runtime_context?: AgentRecentRuntimeContext | null;
+  session_resume_context?: AgentSessionResumeContext | null;
+  preserved_turn_input_ids?: string[] | null;
+  restored_memory_paths?: string[] | null;
+}
+```
+
+The `restoration_order` array controls the sequence: `boundary_summary` is loaded first, then `recent_runtime_context`, then `session_resume_context`, then any preserved turn input IDs and restored memory paths.
+
+## How sessions resume from prior context
+
+When a new run starts in an existing session, the runtime assembles a resume context from multiple sources in priority order:
+
+<Steps>
+  <Step title="Compaction boundary">
+    If a compaction boundary exists for the session, the runtime extracts the `boundary_summary`, `recent_runtime_context`, and `session_resume_context` from its `restorationContext`. The `recentRuntimeContextFromCompactionBoundary` function in `turn-result-summary.ts` handles the extraction with validation.
+  </Step>
+  <Step title="Recent turn results">
+    If no compaction boundary covers the current window, the runtime loads the most recent `TurnResultRecord` entries and calls `compactTurnSummary` to extract a compact summary from each one's `assistantText` or `status`.
+  </Step>
+  <Step title="Session messages">
+    Recent user messages are collected from `SessionMessageRecord` entries and included in the `session_resume_context` so the agent can see what was asked without replaying the full message history.
+  </Step>
+  <Step title="Recalled memory">
+    The `recalled_memory_context` is assembled from the memory store — workspace-scoped facts, user preferences, and identity observations relevant to the current input.
+  </Step>
+</Steps>
+
+The assembled context is passed to the agent through the `AgentRuntimeConfigCliRequest`:
+
+```typescript
+// from agent-runtime-config.ts
+export interface AgentRuntimeConfigCliRequest {
+  // ...
+  recent_runtime_context?: AgentRecentRuntimeContext | null;
+  session_resume_context?: AgentSessionResumeContext | null;
+  recalled_memory_context?: AgentRecalledMemoryContext | null;
+  // ...
+}
+```
+
+<Tip>
+The `TurnResultRecord` carries a `compactedSummary` field that can be set explicitly rather than derived from `assistantText`. When the evolve job processes a turn, it can write a higher-quality summary to this field, which is then preferred over the automatic extraction in subsequent resumption passes.
+</Tip>
+
+## The evolve pipeline and memory writeback
+
+Memory is not written directly by the agent. It is written by the `evolve` post-run job that runs after each turn completes. This separation keeps memory writes out of the agent's hot path and ensures they go through the runtime's validation and scoping logic.
+
+The pipeline:
+
+1. After a turn completes, `enqueueEvolveJob` in `evolve.ts` schedules an `evolve` job keyed to `evolve:<input_id>`.
+2. The job calls `writeTurnDurableMemory` which uses a background model client to extract durable observations from the turn result.
+3. Extracted observations are written to the filesystem memory store via `MemoryServiceLike.upsert`.
+4. The job also calls `reviewTurnForSkillCandidate` to check whether the turn contains a pattern worth capturing as a reusable skill.
+
+The idempotency key (`evolve:<input_id>`) ensures the job runs exactly once per turn even if the worker restarts.

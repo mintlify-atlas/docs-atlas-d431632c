@@ -1,0 +1,125 @@
+---
+title: "Learning path through holaOS architecture"
+description: "A guided sequence through the core technical concepts in holaOS — from the environment thesis to the agent harness to building your own workspace apps."
+---
+
+Once you have a local desktop environment running, the next step is understanding how the system is structured and why each layer exists. This path moves from first principles to implementation details in a deliberate order — each concept builds on the one before it.
+
+Work through these in sequence on a first pass. You can return to individual sections as reference once you are building.
+
+## The path
+
+<Steps>
+  <Step title="Environment engineering">
+    **Why read this first:** Everything else in holaOS follows from a single premise — the environment, not the model, determines whether an agent can do long-horizon work. This page establishes the thesis and explains why the runtime, memory, and workspace structure are first-class concerns rather than implementation details.
+
+    If you skip this and go straight to the technical pages, the design decisions will seem arbitrary. Read this first to understand the reasoning behind the rest of the architecture.
+
+    <CardGroup cols={1}>
+      <Card title="Environment engineering" icon="flask" href="/concepts/environment-engineering">
+        The core thesis behind holaOS and why the environment defines the agent system.
+      </Card>
+    </CardGroup>
+  </Step>
+
+  <Step title="Workspace model">
+    **Why read this next:** The workspace model is the structural contract between the operator, the agent, and the runtime. It establishes the shared vocabulary — workspace, run, memory, output, app, skill — and explains where state lives and who owns it.
+
+    Understanding the workspace contract before reading about memory and the harness is important. Both layers depend on knowing where state lives. The workspace model is the coordinate system the rest of the architecture operates in.
+
+    <CardGroup cols={1}>
+      <Card title="Workspace model" icon="folder-tree" href="/concepts/workspace-model">
+        The workspace contract, authored surfaces, and runtime-owned state.
+      </Card>
+    </CardGroup>
+  </Step>
+
+  <Step title="Memory and continuity">
+    **Why read this next:** Memory is the mechanism that turns a series of disconnected runs into long-horizon work. This page covers how the embedding-backed memory store works, how continuity artifacts are written at the end of a run, and how the agent resumes from a previous state rather than starting from scratch.
+
+    This is where the "long-horizon" in the product name becomes concrete. After reading this, you will understand how an agent accumulates knowledge over time rather than losing it at context-window boundaries.
+
+    <CardGroup cols={1}>
+      <Card title="Memory and continuity" icon="brain" href="/concepts/memory-and-continuity">
+        Durable memory, continuity artifacts, and long-horizon resume behavior.
+      </Card>
+    </CardGroup>
+  </Step>
+
+  <Step title="Agent harness">
+    **Why read this next:** The agent harness is the execution boundary that separates the agent from the runtime host. It defines the protocol for starting runs, streaming events, handling failures, and enforcing the workspace contract at runtime.
+
+    Read this after memory and continuity because the harness is responsible for writing continuity artifacts at the end of each run. Understanding memory first makes the harness lifecycle make sense.
+
+    <CardGroup cols={1}>
+      <Card title="Agent harness" icon="shield" href="/concepts/agent-harness">
+        The stable harness boundary inside the runtime and how executors fit into it.
+      </Card>
+    </CardGroup>
+  </Step>
+
+  <Step title="Build on holaOS">
+    **Why read this next:** With the conceptual foundation in place, this section maps the full developer surface — how the desktop and runtime are structured as code, where the validation paths are, and how to run the full local development loop.
+
+    Start with the start-developing page, which is the practical entry point for contributing or building on top of the system. The runtime APIs and desktop workspace pages give you the operator-facing surface from a code perspective.
+
+    <CardGroup cols={2}>
+      <Card title="Start developing" icon="terminal" href="/build/start-developing">
+        The local developer path for desktop and runtime validation.
+      </Card>
+      <Card title="Runtime APIs" icon="server" href="/build/runtime-apis">
+        The runtime operational surface for workspaces, runs, and streaming.
+      </Card>
+      <Card title="Desktop workspace" icon="monitor" href="/build/desktop-workspace">
+        The desktop workspace surface and operator-facing shell behavior.
+      </Card>
+      <Card title="Independent deploy" icon="cloud" href="/build/independent-deploy">
+        Running the portable runtime without the desktop app.
+      </Card>
+    </CardGroup>
+  </Step>
+
+  <Step title="App development">
+    **Why read this last:** Workspace apps are the extension layer — they run inside the runtime, expose APIs the agent can call, and add capabilities beyond what the base environment provides. Building apps requires understanding the workspace model, the runtime API surface, and the app SDK.
+
+    After reading this section, you will be able to build and install your own workspace app that the agent can interact with during runs.
+
+    <CardGroup cols={2}>
+      <Card title="App overview" icon="puzzle-piece" href="/apps/overview">
+        The app model, lifecycle, and how apps fit into the runtime.
+      </Card>
+      <Card title="Build your first app" icon="code" href="/apps/first-app">
+        A step-by-step guide to building a workspace app on holaOS.
+      </Card>
+      <Card title="Workspace skills" icon="graduation-cap" href="/apps/workspace-skills">
+        How agents propose and persist new skills to improve future behavior.
+      </Card>
+      <Card title="MCP integration" icon="plug" href="/apps/mcp-integration">
+        Exposing tools to agents via the Model Context Protocol.
+      </Card>
+    </CardGroup>
+  </Step>
+</Steps>
+
+## Reference material
+
+After working through the path above, these reference pages are useful to keep open while you build:
+
+<CardGroup cols={2}>
+  <Card title="Environment variables" icon="key" href="/reference/environment-variables">
+    All configurable environment variables for desktop and runtime.
+  </Card>
+  <Card title="App SDK" icon="package" href="/reference/app-sdk">
+    The TypeScript SDK for building workspace apps.
+  </Card>
+  <Card title="Runtime config" icon="sliders" href="/reference/runtime-config">
+    Runtime configuration options and defaults.
+  </Card>
+  <Card title="Harness contracts" icon="file-contract" href="/reference/harness-contracts">
+    The harness boundary types and event protocol.
+  </Card>
+</CardGroup>
+
+<Note>
+  If you run into problems during setup or development, check the [troubleshooting page](/build/troubleshooting) before opening an issue. It covers the most common local runtime and desktop failure modes.
+</Note>

@@ -1,0 +1,108 @@
+{
+  "projectType": "framework",
+  "projectName": "HolaBoss / holaOS",
+  "projectDescription": "An open-source agent environment that gives AI agents a structured operating system — runtime, memory, tools, apps, and durable state — so they can work continuously and evolve over time.",
+  "theme": "luma",
+  "primaryColor": "#f07021",
+  "lightColor": "#f0bd88",
+  "darkColor": null,
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "learning-path"
+            ]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "concepts/environment-engineering",
+              "concepts/workspace-model",
+              "concepts/memory-and-continuity",
+              "concepts/agent-harness"
+            ]
+          },
+          {
+            "group": "Build on holaOS",
+            "pages": [
+              "build/start-developing",
+              "build/desktop-workspace",
+              "build/model-configuration",
+              "build/runtime-apis",
+              "build/independent-deploy",
+              "build/troubleshooting"
+            ]
+          },
+          {
+            "group": "App Development",
+            "pages": [
+              "apps/overview",
+              "apps/first-app",
+              "apps/workspace-skills",
+              "apps/mcp-integration"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Reference",
+        "groups": [
+          {
+            "group": "SDK",
+            "pages": [
+              "reference/app-sdk",
+              "reference/bridge-sdk"
+            ]
+          },
+          {
+            "group": "Configuration",
+            "pages": [
+              "reference/environment-variables",
+              "reference/runtime-config",
+              "reference/harness-contracts"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Durable agent memory and continuity across runs",
+    "Structured workspace model with runtime-owned state",
+    "Agent harness boundary for pluggable execution backends",
+    "MCP (Model Context Protocol) server integration",
+    "Proactive / cronjob-driven autonomous agent tasks",
+    "Workspace apps with lifecycle management",
+    "Self-evolving skills system",
+    "Electron desktop shell for local development",
+    "Portable runtime deployable independently from desktop",
+    "TypeScript-first SDK with generated API clients"
+  ],
+  "publicApiSurface": [
+    "buildRuntimeApiServer(options: BuildRuntimeApiServerOptions): FastifyInstance",
+    "runHarnessHostCli(argv: string[], deps?): Promise<number>",
+    "runHarnessHostMain(argv: string[], deps?): Promise<void>",
+    "createAppClient(config): AppClient",
+    "createIntegrationClient(): IntegrationClient",
+    "resolveHolabossTurnContext(): HolabossTurnContext",
+    "createAppOutput(request: CreateAppOutputRequest): Promise<WorkspaceOutputPayload>",
+    "publishSessionArtifact(request: PublishSessionArtifactRequest): Promise<SessionArtifactPayload>",
+    "updateAppOutput(request: UpdateAppOutputRequest): Promise<WorkspaceOutputPayload>",
+    "buildAppResourcePresentation(input: AppOutputPresentationInput): unknown",
+    "GET /api/v1/workspaces",
+    "POST /api/v1/workspaces",
+    "GET /api/v1/workspaces/:workspaceId/sessions",
+    "POST /api/v1/workspaces/:workspaceId/sessions/:sessionId/input",
+    "GET /api/v1/workspaces/:workspaceId/sessions/:sessionId/stream",
+    "GET /api/v1/workspaces/:workspaceId/memory",
+    "POST /api/v1/apps/install-archive",
+    "GET /api/v1/config",
+    "PATCH /api/v1/config"
+  ]
+}

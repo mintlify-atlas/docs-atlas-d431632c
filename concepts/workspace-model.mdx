@@ -1,0 +1,167 @@
+---
+title: "Workspace model: the agent's structured filesystem contract"
+description: "How holaOS uses the workspace as a typed contract between the operator and the runtime, separating authored surfaces from runtime-owned state."
+---
+
+A workspace in holaOS is not a directory the agent writes to freely. It is a structured contract between the operator and the runtime: a defined layout where each path has an owner, a purpose, and a role in how the agent runs. Operators author certain surfaces — skills, tools, apps, configuration. The runtime owns others — session state, memory, evolve candidates. The agent reads and writes within that contract, never outside it.
+
+This separation is what makes workspaces inspectable, reproducible, and safe to extend over time.
+
+## Workspace directory layout
+
+Every workspace follows a predictable structure. The top-level path is determined by the runtime's `workspaceRoot` setting plus a workspace ID. Inside that path, both the operator's authored content and the runtime's generated state live side by side.
+
+```text
+<workspace-root>/<workspace-id>/
+├── .holaboss/                     # runtime-owned state
+│   ├── workspace_id               # identity file written by the runtime
+│   ├── evolve/                    # skill candidates staged by the evolve pipeline
+│   └── apps/                      # app build outputs and port assignments
+├── skills/                        # operator-authored workspace skills (SKILL.md files)
+├── tools/                         # operator-authored workspace tools (Node.js modules)
+├── apps/                          # workspace apps (sources, configs, entry points)
+├── memory/                        # durable memory store
+│   ├── MEMORY.md                  # root memory entrypoint
+│   ├── workspace/<workspace-id>/  # workspace-scoped memory files
+│   ├── preference/                # user preference memory files
+│   └── identity/                  # user identity memory files
+└── workspace.yaml                 # workspace configuration (operator-authored)
+```
+
+<Info>
+The `.holaboss/` directory is written exclusively by the runtime. The `workspace_id` identity file inside it is how the runtime discovers which workspace ID maps to a given filesystem path when the path registry is stale.
+</Info>
+
+## Authored surfaces: what operators configure
+
+Authored surfaces are the parts of the workspace that operators create and maintain. The runtime reads them but does not overwrite them.
+
+<AccordionGroup>
+  <Accordion title="Workspace skills (skills/)">
+    Skills are reusable workflow definitions the agent can invoke. Each skill lives in its own subdirectory under `skills/` and must contain a `SKILL.md` file with valid YAML frontmatter.
+
+    The frontmatter requires a `name` field that matches the directory name and a `description` field. Skills without both fields are ignored by the resolver.
+
+    ```typescript
+    // from workspace-skills.ts
+    export interface ResolvedWorkspaceSkill {
+      skill_id: string;
+      source_dir: string;
+      origin: ResolvedSkillOrigin; // "workspace" | "embedded"
+    }
+    ```
+
+    Embedded skills ship with the runtime under `harnesses/src/embedded-skills/`. Workspace-local skills in `skills/` take precedence over embedded ones when they share the same `skill_id`.
+  </Accordion>
+
+  <Accordion title="Workspace tools (tools/)">
+    Tools are Node.js modules exposed to the agent as MCP (Model Context Protocol) tools. Each tool in the workspace is cataloged and served through the workspace MCP host — a per-workspace HTTP server that implements the MCP protocol.
+
+    The MCP host loads tools dynamically from the workspace directory and bridges them to the agent via `HarnessHostPiMcpToolRef` references in the harness request:
+
+    ```typescript
+    // from contracts.ts
+    export interface HarnessHostPiMcpToolRef {
+      tool_id: string;
+      server_id: string;
+      tool_name: string;
+    }
+    ```
+
+    Tool definitions include an `inputSchema`, optional `outputSchema`, and optional `annotations` that control how the agent can call them.
+  </Accordion>
+
+  <Accordion title="Workspace apps (apps/)">
+    Apps are runnable services that live inside the workspace and are accessible to the agent through browser tools or direct API calls. Each app has a build record, a port assignment, and a catalog entry.
+
+    The runtime tracks app lifecycle through `AppBuildRecord` in the state store:
+
+    ```typescript
+    // from state-store/src/store.ts
+    export interface AppBuildRecord {
+      workspaceId: string;
+      appId: string;
+      status: string;
+      startedAt: string | null;
+      completedAt: string | null;
+      error: string | null;
+      restartAttempts: number;
+      createdAt: string;
+      updatedAt: string;
+    }
+    ```
+
+    The `restartAttempts` field persists across runtime restarts so a crashing app eventually trips a circuit breaker rather than looping indefinitely.
+  </Accordion>
+
+  <Accordion title="workspace.yaml">
+    The `workspace.yaml` file is the primary operator configuration surface. It controls which tools are enabled, which apps are installed, which model is selected, and other workspace-level settings. Its contents contribute to the `workspace_config_checksum` that is passed through every harness request, allowing the runtime to detect when the workspace configuration has changed and needs to be re-staged.
+  </Accordion>
+</AccordionGroup>
+
+## Runtime-owned state: what the runtime writes
+
+The runtime writes its own state into the workspace filesystem and into a SQLite database (`runtime.db`) located at the path set by `HOLABOSS_RUNTIME_DB_PATH` or defaulting to `<sandbox-root>/state/runtime.db`.
+
+<CardGroup cols={2}>
+  <Card title="Workspace identity" icon="fingerprint">
+    The `.holaboss/workspace_id` file is written when the workspace is created. The runtime uses it to recover the workspace ID from the filesystem when the path registry is stale.
+  </Card>
+  <Card title="Session records" icon="layers">
+    `AgentSessionRecord` entries in the state store bind sessions to workspaces. Each session has a `kind` (`workspace_session` or `task_proposal`), a title, and parent session linkage.
+  </Card>
+  <Card title="Memory store" icon="database">
+    The `memory/` subtree is written by the evolve post-run job. The runtime enforces path constraints — only `MEMORY.md`, `workspace/<id>/*`, `preference/*`, and `identity/*` are valid write targets.
+  </Card>
+  <Card title="Evolve candidates" icon="sparkles">
+    Skill candidates generated by the evolve pipeline are staged in `.holaboss/evolve/` as draft artifacts. They are not live skills until an operator promotes them.
+  </Card>
+</CardGroup>
+
+## How sessions map to workspaces
+
+Every agent session belongs to exactly one workspace. The mapping is recorded in the state store when the session is created via `ensureSession`. Sessions have a `kind` field that controls which tools are available and what harness timeout applies:
+
+```typescript
+// from state-store/src/store.ts
+export interface AgentSessionRecord {
+  workspaceId: string;
+  sessionId: string;
+  kind: string;            // "workspace_session" | "task_proposal"
+  title: string | null;
+  parentSessionId: string | null;
+  sourceProposalId: string | null;
+  createdBy: string | null;
+  createdAt: string;
+  updatedAt: string;
+  archivedAt: string | null;
+}
+```
+
+Sessions of kind `task_proposal` get a longer default timeout (`HOLABOSS_TASK_PROPOSAL_HARNESS_RUN_TIMEOUT_S`, defaulting to a minimum of 7200 seconds). Sessions of kind `workspace_session` use the standard harness timeout (`HOLABOSS_HARNESS_RUN_TIMEOUT_S`, defaulting to 1800 seconds).
+
+<Note>
+Browser tools are only staged for `workspace_session` kind sessions. The harness registry checks the session kind before enabling desktop browser tool IDs, so task proposal sessions run without browser access by default.
+</Note>
+
+## The workspace config checksum
+
+Every harness run carries a `workspace_config_checksum` derived from the current state of the workspace's authored surfaces. The checksum is computed when the runtime prepares a run and passed through to the harness in the `HarnessHostPiRequest`:
+
+```typescript
+// from contracts.ts
+export interface HarnessHostPiRequest {
+  workspace_id: string;
+  workspace_dir: string;
+  session_id: string;
+  input_id: string;
+  // ...
+  workspace_config_checksum: string;
+  workspace_skill_dirs: string[];
+  mcp_servers: JsonObject[];
+  mcp_tool_refs: HarnessHostPiMcpToolRef[];
+  // ...
+}
+```
+
+The checksum lets the harness detect when skills or tools have changed between runs and re-stage the agent's capability manifest accordingly. It is also stored in the `TurnResultRecord` so post-run analysis can correlate agent behavior with the workspace configuration that was active when a turn ran.
